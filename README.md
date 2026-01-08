@@ -31,7 +31,7 @@ pip install mcp-screenshot-server
 uv add mcp-screenshot-server
 
 # From source
-git clone https://github.com/YOUR_USERNAME/mcp-screenshot-server.git
+git clone https://github.com/aamar-shahzad/mcp-screenshot-server.git
 cd mcp-screenshot-server
 pip install -e .
 ```
@@ -273,7 +273,7 @@ Options:
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/mcp-screenshot-server.git
+git clone https://github.com/aamar-shahzad/mcp-screenshot-server.git
 cd mcp-screenshot-server
 
 # Install with development dependencies

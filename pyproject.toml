@@ -42,9 +42,9 @@ clipboard = [
 mcp-screenshot-server = "mcp_screenshot_server.server:main"
 
 [project.urls]
-Homepage = "https://github.com/YOUR_USERNAME/mcp-screenshot-server"
-Repository = "https://github.com/YOUR_USERNAME/mcp-screenshot-server"
-Issues = "https://github.com/YOUR_USERNAME/mcp-screenshot-server/issues"
+Homepage = "https://github.com/aamar-shahzad/mcp-screenshot-server"
+Repository = "https://github.com/aamar-shahzad/mcp-screenshot-server"
+Issues = "https://github.com/aamar-shahzad/mcp-screenshot-server/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_screenshot_server"]
