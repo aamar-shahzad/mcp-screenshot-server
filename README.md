@@ -29,6 +29,9 @@ A powerful [Model Context Protocol (MCP)](https://modelcontextprotocol.io) serve
 - 🔲 **Blur/Pixelate** - Hide sensitive information (passwords, emails)
 - ✂️ **Crop** - Crop images to specific regions
 - 📐 **Resize** - Resize with scale or exact dimensions
+- 🔄 **Rotate/Flip** - Rotate 90/180/270 degrees, flip horizontal/vertical
+- 🌓 **Brightness/Contrast** - Adjust image appearance
+- 💧 **Watermark** - Add text watermarks
 - ↩️ **Undo** - Undo annotations (up to 10 levels)
 
 ### Export
@@ -199,6 +202,11 @@ mcp-screenshot-server --transport sse --port 8000
 | `blur_region`           | Blur/pixelate sensitive areas          |
 | `crop_image`            | Crop image to specific region          |
 | `resize_image`          | Resize with scale or dimensions        |
+| `rotate_image`          | Rotate 90, 180, or 270 degrees         |
+| `flip_image`            | Flip horizontal or vertical            |
+| `adjust_brightness`     | Adjust image brightness                |
+| `adjust_contrast`       | Adjust image contrast                  |
+| `add_watermark`         | Add text watermark                     |
 | `undo`                  | Undo last annotation (up to 10 levels) |
 | `get_undo_count`        | Check available undo operations        |
 | `reset_callout_counter` | Reset auto-numbering to 0              |

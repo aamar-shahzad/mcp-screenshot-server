@@ -787,6 +787,184 @@ def quick_save(
     )
 
 
+@mcp.tool()
+def rotate_image(
+    image_id: Annotated[str, Field(description="ID of the image to rotate")],
+    angle: Annotated[
+        Literal[90, 180, 270],
+        Field(description="Rotation angle: 90 (left), 180, or 270 (right)")
+    ] = 90,
+) -> ScreenshotResult:
+    """Rotate the image by 90, 180, or 270 degrees."""
+    image = _get_image(image_id)
+    
+    # PIL rotates counter-clockwise, so we negate for intuitive behavior
+    if angle == 90:
+        rotated = image.transpose(PILImage.Transpose.ROTATE_90)
+    elif angle == 180:
+        rotated = image.transpose(PILImage.Transpose.ROTATE_180)
+    else:  # 270
+        rotated = image.transpose(PILImage.Transpose.ROTATE_270)
+    
+    _store_image(rotated, image_id)
+    
+    return ScreenshotResult(
+        image_id=image_id,
+        width=rotated.width,
+        height=rotated.height,
+        message=f"Image rotated {angle} degrees"
+    )
+
+
+@mcp.tool()
+def flip_image(
+    image_id: Annotated[str, Field(description="ID of the image to flip")],
+    direction: Annotated[
+        Literal["horizontal", "vertical"],
+        Field(description="Flip direction: horizontal (mirror) or vertical")
+    ] = "horizontal",
+) -> ScreenshotResult:
+    """Flip the image horizontally (mirror) or vertically."""
+    image = _get_image(image_id)
+    
+    if direction == "horizontal":
+        flipped = image.transpose(PILImage.Transpose.FLIP_LEFT_RIGHT)
+    else:
+        flipped = image.transpose(PILImage.Transpose.FLIP_TOP_BOTTOM)
+    
+    _store_image(flipped, image_id)
+    
+    return ScreenshotResult(
+        image_id=image_id,
+        width=flipped.width,
+        height=flipped.height,
+        message=f"Image flipped {direction}ly"
+    )
+
+
+@mcp.tool()
+def add_watermark(
+    image_id: Annotated[str, Field(description="ID of the image")],
+    text: Annotated[str, Field(description="Watermark text")],
+    position: Annotated[
+        Literal["bottom-right", "bottom-left", "top-right", "top-left", "center"],
+        Field(description="Position of the watermark")
+    ] = "bottom-right",
+    opacity: Annotated[int, Field(description="Opacity (0-255)")] = 128,
+    font_size: Annotated[int, Field(description="Font size")] = 24,
+    color: Annotated[str, Field(description="Text color")] = "#ffffff",
+) -> AnnotationResult:
+    """Add a text watermark to the image."""
+    from PIL import ImageColor
+    
+    image = _get_image(image_id).convert("RGBA")
+    
+    # Create watermark layer
+    watermark = PILImage.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(watermark)
+    
+    # Get font
+    font = None
+    try:
+        font_paths = [
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "C:\\Windows\\Fonts\\arial.ttf",
+        ]
+        for font_path in font_paths:
+            if os.path.exists(font_path):
+                font = ImageFont.truetype(font_path, font_size)
+                break
+    except Exception:
+        pass
+    
+    if font is None:
+        font = ImageFont.load_default()
+    
+    # Calculate text size
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    
+    # Calculate position
+    padding = 20
+    if position == "bottom-right":
+        x = image.width - text_width - padding
+        y = image.height - text_height - padding
+    elif position == "bottom-left":
+        x = padding
+        y = image.height - text_height - padding
+    elif position == "top-right":
+        x = image.width - text_width - padding
+        y = padding
+    elif position == "top-left":
+        x = padding
+        y = padding
+    else:  # center
+        x = (image.width - text_width) // 2
+        y = (image.height - text_height) // 2
+    
+    # Parse color and add opacity
+    try:
+        rgb = ImageColor.getrgb(color)
+        rgba = (*rgb, opacity)
+    except ValueError:
+        rgba = (255, 255, 255, opacity)
+    
+    draw.text((x, y), text, fill=rgba, font=font)
+    
+    # Composite
+    result = PILImage.alpha_composite(image, watermark)
+    result = result.convert("RGB")
+    
+    _store_image(result, image_id)
+    
+    return AnnotationResult(
+        image_id=image_id,
+        message=f"Watermark '{text}' added at {position}"
+    )
+
+
+@mcp.tool()
+def adjust_brightness(
+    image_id: Annotated[str, Field(description="ID of the image")],
+    factor: Annotated[float, Field(description="Brightness factor (0.5=darker, 1.0=unchanged, 1.5=brighter)")] = 1.0,
+) -> AnnotationResult:
+    """Adjust image brightness."""
+    from PIL import ImageEnhance
+    
+    image = _get_image(image_id)
+    enhancer = ImageEnhance.Brightness(image)
+    adjusted = enhancer.enhance(factor)
+    
+    _store_image(adjusted, image_id)
+    
+    return AnnotationResult(
+        image_id=image_id,
+        message=f"Brightness adjusted by factor {factor}"
+    )
+
+
+@mcp.tool()
+def adjust_contrast(
+    image_id: Annotated[str, Field(description="ID of the image")],
+    factor: Annotated[float, Field(description="Contrast factor (0.5=less, 1.0=unchanged, 1.5=more)")] = 1.0,
+) -> AnnotationResult:
+    """Adjust image contrast."""
+    from PIL import ImageEnhance
+    
+    image = _get_image(image_id)
+    enhancer = ImageEnhance.Contrast(image)
+    adjusted = enhancer.enhance(factor)
+    
+    _store_image(adjusted, image_id)
+    
+    return AnnotationResult(
+        image_id=image_id,
+        message=f"Contrast adjusted by factor {factor}"
+    )
+
+
 # =============================================================================
 # Image Management Tools
 # =============================================================================
@@ -877,13 +1055,19 @@ def save_image(
     
     # Save with appropriate settings
     save_kwargs = {}
+    pil_format = format.upper()
+    
+    # PIL uses 'JPEG' not 'JPG'
+    if pil_format == "JPG":
+        pil_format = "JPEG"
+    
     if format.lower() in ["jpg", "jpeg"]:
         # Convert RGBA to RGB for JPEG
         if image.mode == "RGBA":
             image = image.convert("RGB")
         save_kwargs["quality"] = quality
     
-    image.save(path, format=format.upper(), **save_kwargs)
+    image.save(path, format=pil_format, **save_kwargs)
     
     return SaveResult(
         path=os.path.abspath(path),
