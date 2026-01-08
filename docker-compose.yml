@@ -1,0 +1,54 @@
+# Docker Compose for MCP Screenshot Server
+# Use this for easy local development and testing
+
+version: '3.8'
+
+services:
+  mcp-screenshot-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-screenshot-server
+    
+    # For HTTP transport mode
+    ports:
+      - "8000:8000"
+    
+    # Override command for HTTP transport
+    command: ["--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8000"]
+    
+    # Mount volumes for saving screenshots
+    volumes:
+      - ./screenshots:/app/screenshots
+    
+    # Environment variables
+    environment:
+      - PYTHONUNBUFFERED=1
+    
+    # Restart policy
+    restart: unless-stopped
+
+  # Alternative: stdio transport (for direct integration)
+  mcp-screenshot-server-stdio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-screenshot-server-stdio
+    
+    # Keep stdin open for stdio transport
+    stdin_open: true
+    tty: true
+    
+    # Default command uses stdio
+    command: ["--transport", "stdio"]
+    
+    # Mount volumes for saving screenshots
+    volumes:
+      - ./screenshots:/app/screenshots
+    
+    environment:
+      - PYTHONUNBUFFERED=1
+    
+    profiles:
+      - stdio
+
