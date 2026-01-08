@@ -19,6 +19,14 @@ A powerful [Model Context Protocol (MCP)](https://modelcontextprotocol.io) serve
 - 📋 **Clipboard Support** - Copy images directly to system clipboard
 - 🐳 **Docker Ready** - Run as a containerized service
 
+## Example
+
+Here's an example of a screenshot with annotations added using the MCP Screenshot Server:
+
+![Example Annotated Screenshot](docs/example-annotated.png)
+
+*Screenshot captured and annotated directly in Cursor AI using the MCP tools.*
+
 ## Quick Start
 
 ### Installation
