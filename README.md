@@ -175,6 +175,23 @@ mcp-screenshot-server --transport sse --port 8000
 | `open_in_preview`      | Open image in macOS Preview or default viewer |
 | `open_file_in_preview` | Open any image file in Preview/default viewer |
 
+## macOS Preview Integration
+
+On macOS, you can use the `open_in_preview` tool to open images in the native **Preview.app**, which provides additional markup tools:
+
+![Preview Integration](docs/preview-integration.png)
+
+### Preview's Native Tools:
+
+- ✏️ **Sketch** - Freehand drawing
+- ⬜ **Shapes** - Rectangles, circles, arrows, speech bubbles
+- 📝 **Text** - Add text boxes with custom fonts
+- ✍️ **Signature** - Add your saved signature
+- 🎨 **Colors** - Full color picker
+- 📏 **Border** - Adjust line thickness
+
+This allows you to combine MCP annotations with Preview's native tools for more complex edits.
+
 ## Usage Examples
 
 ### Basic Screenshot and Annotation
