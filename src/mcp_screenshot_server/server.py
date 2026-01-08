@@ -32,6 +32,8 @@ mcp = FastMCP(
     - add_highlight: Add semi-transparent highlight regions
     - save_image: Save the annotated image to disk
     - copy_to_clipboard: Copy image to system clipboard
+    - open_in_preview: Open image in native Preview app (macOS) or default viewer
+    - open_file_in_preview: Open any image file in Preview/default viewer
     - list_images: List all images in the current session
     - get_image: Get a specific image by ID
     """,
@@ -639,6 +641,84 @@ def get_image_base64(
         "data": f"data:image/png;base64,{base64_data}",
         "message": "Image encoded as base64"
     }
+
+
+@mcp.tool()
+def open_in_preview(
+    image_id: Annotated[str, Field(description="ID of the image to open")],
+    save_path: Annotated[str | None, Field(description="Optional path to save before opening")] = None,
+) -> dict[str, str]:
+    """
+    Open an image in the native Preview app (macOS only).
+    
+    On macOS, this opens the image in Preview.app for viewing and native annotation.
+    On other platforms, it opens with the default image viewer.
+    """
+    if image_id not in _image_store:
+        raise ValueError(f"Image '{image_id}' not found.")
+    
+    # Determine save path
+    if save_path:
+        file_path = os.path.expanduser(save_path)
+        os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)
+    else:
+        # Create a temporary file that won't be auto-deleted
+        file_path = os.path.join(
+            tempfile.gettempdir(),
+            f"mcp_screenshot_{image_id}.png"
+        )
+    
+    # Save the image
+    image = _get_image(image_id)
+    image.save(file_path, "PNG")
+    
+    # Open with native application
+    if sys.platform == "darwin":
+        # macOS - use Preview.app
+        subprocess.run(["open", "-a", "Preview", file_path], check=True)
+        return {
+            "message": f"Image opened in Preview.app",
+            "path": file_path
+        }
+    elif sys.platform == "win32":
+        # Windows - use default viewer
+        os.startfile(file_path)
+        return {
+            "message": "Image opened in default viewer",
+            "path": file_path
+        }
+    else:
+        # Linux - use xdg-open
+        subprocess.run(["xdg-open", file_path], check=True)
+        return {
+            "message": "Image opened in default viewer",
+            "path": file_path
+        }
+
+
+@mcp.tool()
+def open_file_in_preview(
+    path: Annotated[str, Field(description="Path to the image file to open")]
+) -> dict[str, str]:
+    """
+    Open an image file directly in the native Preview app (macOS) or default viewer.
+    
+    This doesn't require loading the image into the session first.
+    """
+    path = os.path.expanduser(path)
+    
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"File not found: {path}")
+    
+    if sys.platform == "darwin":
+        subprocess.run(["open", "-a", "Preview", path], check=True)
+        return {"message": f"Opened {path} in Preview.app"}
+    elif sys.platform == "win32":
+        os.startfile(path)
+        return {"message": f"Opened {path} in default viewer"}
+    else:
+        subprocess.run(["xdg-open", path], check=True)
+        return {"message": f"Opened {path} in default viewer"}
 
 
 # =============================================================================

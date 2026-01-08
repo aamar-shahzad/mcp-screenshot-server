@@ -25,7 +25,7 @@ Here's an example of a screenshot with annotations added using the MCP Screensho
 
 ![Example Annotated Screenshot](docs/example-annotated.png)
 
-*Screenshot captured and annotated directly in Cursor AI using the MCP tools.*
+_Screenshot captured and annotated directly in Cursor AI using the MCP tools._
 
 ## Quick Start
 
@@ -167,11 +167,13 @@ mcp-screenshot-server --transport sse --port 8000
 
 ### Export Tools
 
-| Tool                | Description                               |
-| ------------------- | ----------------------------------------- |
-| `save_image`        | Save image to disk (PNG, JPG, WebP, etc.) |
-| `copy_to_clipboard` | Copy image to system clipboard            |
-| `get_image_base64`  | Get image as base64-encoded string        |
+| Tool                   | Description                                   |
+| ---------------------- | --------------------------------------------- |
+| `save_image`           | Save image to disk (PNG, JPG, WebP, etc.)     |
+| `copy_to_clipboard`    | Copy image to system clipboard                |
+| `get_image_base64`     | Get image as base64-encoded string            |
+| `open_in_preview`      | Open image in macOS Preview or default viewer |
+| `open_file_in_preview` | Open any image file in Preview/default viewer |
 
 ## Usage Examples
 
