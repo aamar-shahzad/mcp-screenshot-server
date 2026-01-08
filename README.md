@@ -8,15 +8,35 @@ A powerful [Model Context Protocol (MCP)](https://modelcontextprotocol.io) serve
 
 ## Features
 
+### Capture & Load
+
 - 📷 **Screenshot Capture** - Full screen, region, or window-specific captures
+- 📂 **Load Images** - Load existing image files for annotation
+
+### Annotations
+
 - 📦 **Box Annotation** - Draw rectangles with customizable colors and fill
 - ➡️ **Arrow Annotation** - Draw directional arrows with adjustable head sizes
 - 📏 **Line Drawing** - Simple line annotations
 - ⭕ **Circle/Ellipse** - Draw circles and ellipses
 - 📝 **Text Overlay** - Add text with custom fonts and backgrounds
 - 🔦 **Highlight Regions** - Semi-transparent highlight overlays
+- 🔢 **Numbered Callouts** - Auto-numbered callouts for step-by-step guides
+- 🖼️ **Border Tool** - Add borders around images
+
+### Editing
+
+- 🔲 **Blur/Pixelate** - Hide sensitive information (passwords, emails)
+- ✂️ **Crop** - Crop images to specific regions
+- 📐 **Resize** - Resize with scale or exact dimensions
+- ↩️ **Undo** - Undo annotations (up to 10 levels)
+
+### Export
+
 - 💾 **Save Images** - Export to PNG, JPG, WebP, and more
+- ⚡ **Quick Save** - One-click save to Desktop/Downloads
 - 📋 **Clipboard Support** - Copy images directly to system clipboard
+- 👁️ **Preview Integration** - Open in macOS Preview.app for native editing
 - 🐳 **Docker Ready** - Run as a containerized service
 
 ## Example
@@ -147,14 +167,27 @@ mcp-screenshot-server --transport sse --port 8000
 
 ### Annotation Tools
 
-| Tool            | Description                            |
-| --------------- | -------------------------------------- |
-| `add_box`       | Draw rectangles/boxes on images        |
-| `add_line`      | Draw lines on images                   |
-| `add_arrow`     | Draw arrows on images                  |
-| `add_text`      | Add text annotations                   |
-| `add_circle`    | Draw circles/ellipses                  |
-| `add_highlight` | Add semi-transparent highlight regions |
+| Tool                   | Description                             |
+| ---------------------- | --------------------------------------- |
+| `add_box`              | Draw rectangles/boxes on images         |
+| `add_line`             | Draw lines on images                    |
+| `add_arrow`            | Draw arrows on images                   |
+| `add_text`             | Add text annotations                    |
+| `add_circle`           | Draw circles/ellipses                   |
+| `add_highlight`        | Add semi-transparent highlight regions  |
+| `add_numbered_callout` | Add auto-numbered callouts (1, 2, 3...) |
+| `add_border`           | Add border around entire image          |
+
+### Editing Tools
+
+| Tool                    | Description                            |
+| ----------------------- | -------------------------------------- |
+| `blur_region`           | Blur/pixelate sensitive areas          |
+| `crop_image`            | Crop image to specific region          |
+| `resize_image`          | Resize with scale or dimensions        |
+| `undo`                  | Undo last annotation (up to 10 levels) |
+| `get_undo_count`        | Check available undo operations        |
+| `reset_callout_counter` | Reset auto-numbering to 0              |
 
 ### Image Management
 
@@ -170,6 +203,7 @@ mcp-screenshot-server --transport sse --port 8000
 | Tool                   | Description                                   |
 | ---------------------- | --------------------------------------------- |
 | `save_image`           | Save image to disk (PNG, JPG, WebP, etc.)     |
+| `quick_save`           | Quick save to Desktop/Downloads/Documents     |
 | `copy_to_clipboard`    | Copy image to system clipboard                |
 | `get_image_base64`     | Get image as base64-encoded string            |
 | `open_in_preview`      | Open image in macOS Preview or default viewer |

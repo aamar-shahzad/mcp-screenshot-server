@@ -1,6 +1,5 @@
 """MCP Screenshot Server - Main server implementation."""
 
-import asyncio
 import base64
 import io
 import os
@@ -22,26 +21,45 @@ mcp = FastMCP(
     instructions="""
     MCP Screenshot Server - A powerful tool for capturing and annotating screenshots.
     
-    Available tools:
+    ## Capture Tools:
     - capture_screenshot: Capture full screen, window, or region screenshots
-    - add_box: Draw rectangles/boxes on images
-    - add_line: Draw lines on images
-    - add_arrow: Draw arrows on images
-    - add_text: Add text annotations to images
-    - add_circle: Draw circles/ellipses on images
-    - add_highlight: Add semi-transparent highlight regions
-    - save_image: Save the annotated image to disk
-    - copy_to_clipboard: Copy image to system clipboard
-    - open_in_preview: Open image in native Preview app (macOS) or default viewer
-    - open_file_in_preview: Open any image file in Preview/default viewer
-    - list_images: List all images in the current session
-    - get_image: Get a specific image by ID
+    - load_image: Load an existing image file
+    
+    ## Annotation Tools:
+    - add_box: Draw rectangles/boxes
+    - add_line: Draw lines
+    - add_arrow: Draw arrows
+    - add_text: Add text labels
+    - add_circle: Draw circles
+    - add_highlight: Semi-transparent highlights
+    - add_numbered_callout: Add numbered callouts (1, 2, 3...)
+    - add_border: Add border around entire image
+    
+    ## Editing Tools:
+    - blur_region: Blur/pixelate sensitive areas (passwords, emails)
+    - crop_image: Crop to specific region
+    - resize_image: Resize with scale or dimensions
+    - undo: Undo last annotation
+    
+    ## Export Tools:
+    - save_image: Save to specific path
+    - quick_save: Save to Desktop/Downloads/Documents
+    - copy_to_clipboard: Copy to clipboard
+    - open_in_preview: Open in native Preview.app (macOS)
+    
+    ## Session Tools:
+    - list_images: List all images in session
+    - get_image: View/retrieve an image
+    - duplicate_image: Create a copy
+    - delete_image: Remove from session
     """,
 )
 
 # In-memory image storage for the session
 _image_store: dict[str, bytes] = {}
+_image_history: dict[str, list[bytes]] = {}  # Undo history per image
 _image_counter = 0
+_callout_counter = 0  # For auto-numbered callouts
 
 
 def _generate_image_id() -> str:
@@ -52,10 +70,20 @@ def _generate_image_id() -> str:
     return f"img_{timestamp}_{_image_counter}"
 
 
-def _store_image(image: PILImage.Image, image_id: str | None = None) -> str:
+def _store_image(image: PILImage.Image, image_id: str | None = None, save_history: bool = True) -> str:
     """Store an image and return its ID."""
     if image_id is None:
         image_id = _generate_image_id()
+        save_history = False  # Don't save history for new images
+    
+    # Save to undo history before overwriting
+    if save_history and image_id in _image_store:
+        if image_id not in _image_history:
+            _image_history[image_id] = []
+        # Keep last 10 states for undo
+        _image_history[image_id].append(_image_store[image_id])
+        if len(_image_history[image_id]) > 10:
+            _image_history[image_id].pop(0)
     
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
@@ -444,6 +472,318 @@ def add_highlight(
     return AnnotationResult(
         image_id=image_id,
         message=f"Highlight added at ({x}, {y}) with size {width}x{height}"
+    )
+
+
+# =============================================================================
+# Advanced Editing Tools
+# =============================================================================
+
+
+@mcp.tool()
+def blur_region(
+    image_id: Annotated[str, Field(description="ID of the image to annotate")],
+    x: Annotated[int, Field(description="X coordinate of the top-left corner")],
+    y: Annotated[int, Field(description="Y coordinate of the top-left corner")],
+    width: Annotated[int, Field(description="Width of the region to blur")],
+    height: Annotated[int, Field(description="Height of the region to blur")],
+    blur_strength: Annotated[int, Field(description="Blur strength (1-50, higher = more blur)")] = 20,
+    pixelate: Annotated[bool, Field(description="Use pixelation instead of blur")] = False,
+) -> AnnotationResult:
+    """
+    Blur or pixelate a region of the image to hide sensitive information.
+    
+    Use this for hiding passwords, email addresses, personal info, etc.
+    """
+    from PIL import ImageFilter
+    
+    image = _get_image(image_id)
+    
+    # Crop the region
+    region = image.crop((x, y, x + width, y + height))
+    
+    if pixelate:
+        # Pixelation: shrink and enlarge
+        pixel_size = max(1, blur_strength // 2)
+        small = region.resize(
+            (max(1, region.width // pixel_size), max(1, region.height // pixel_size)),
+            PILImage.Resampling.NEAREST
+        )
+        region = small.resize(region.size, PILImage.Resampling.NEAREST)
+    else:
+        # Gaussian blur
+        region = region.filter(ImageFilter.GaussianBlur(radius=blur_strength))
+    
+    # Paste back
+    image.paste(region, (x, y))
+    _store_image(image, image_id)
+    
+    effect = "pixelated" if pixelate else "blurred"
+    return AnnotationResult(
+        image_id=image_id,
+        message=f"Region {effect} at ({x}, {y}) with size {width}x{height}"
+    )
+
+
+@mcp.tool()
+def crop_image(
+    image_id: Annotated[str, Field(description="ID of the image to crop")],
+    x: Annotated[int, Field(description="X coordinate of the top-left corner")],
+    y: Annotated[int, Field(description="Y coordinate of the top-left corner")],
+    width: Annotated[int, Field(description="Width of the crop area")],
+    height: Annotated[int, Field(description="Height of the crop area")],
+) -> ScreenshotResult:
+    """Crop the image to a specific region."""
+    image = _get_image(image_id)
+    
+    # Validate bounds
+    x = max(0, min(x, image.width))
+    y = max(0, min(y, image.height))
+    width = min(width, image.width - x)
+    height = min(height, image.height - y)
+    
+    cropped = image.crop((x, y, x + width, y + height))
+    _store_image(cropped, image_id)
+    
+    return ScreenshotResult(
+        image_id=image_id,
+        width=cropped.width,
+        height=cropped.height,
+        message=f"Image cropped to {width}x{height} starting at ({x}, {y})"
+    )
+
+
+@mcp.tool()
+def resize_image(
+    image_id: Annotated[str, Field(description="ID of the image to resize")],
+    width: Annotated[int | None, Field(description="New width (or None to calculate from height)")] = None,
+    height: Annotated[int | None, Field(description="New height (or None to calculate from width)")] = None,
+    scale: Annotated[float | None, Field(description="Scale factor (e.g., 0.5 for half size)")] = None,
+    maintain_aspect: Annotated[bool, Field(description="Maintain aspect ratio")] = True,
+) -> ScreenshotResult:
+    """Resize the image by dimensions or scale factor."""
+    image = _get_image(image_id)
+    
+    if scale is not None:
+        new_width = int(image.width * scale)
+        new_height = int(image.height * scale)
+    elif width is not None and height is not None and not maintain_aspect:
+        new_width = width
+        new_height = height
+    elif width is not None:
+        new_width = width
+        new_height = int(image.height * (width / image.width)) if maintain_aspect else image.height
+    elif height is not None:
+        new_height = height
+        new_width = int(image.width * (height / image.height)) if maintain_aspect else image.width
+    else:
+        raise ValueError("Must specify width, height, or scale")
+    
+    resized = image.resize((new_width, new_height), PILImage.Resampling.LANCZOS)
+    _store_image(resized, image_id)
+    
+    return ScreenshotResult(
+        image_id=image_id,
+        width=new_width,
+        height=new_height,
+        message=f"Image resized to {new_width}x{new_height}"
+    )
+
+
+@mcp.tool()
+def add_numbered_callout(
+    image_id: Annotated[str, Field(description="ID of the image to annotate")],
+    x: Annotated[int, Field(description="X coordinate for the callout center")],
+    y: Annotated[int, Field(description="Y coordinate for the callout center")],
+    number: Annotated[int | None, Field(description="Number to display (auto-increments if None)")] = None,
+    color: Annotated[str, Field(description="Background color of the callout")] = "#ff3333",
+    text_color: Annotated[str, Field(description="Color of the number text")] = "#ffffff",
+    size: Annotated[int, Field(description="Size of the callout circle")] = 40,
+) -> AnnotationResult:
+    """
+    Add a numbered callout (circled number) to the image.
+    
+    Numbers auto-increment if not specified, making it easy to add sequential callouts.
+    """
+    global _callout_counter
+    
+    if number is None:
+        _callout_counter += 1
+        number = _callout_counter
+    
+    image = _get_image(image_id)
+    draw = ImageDraw.Draw(image)
+    
+    # Draw circle background
+    radius = size // 2
+    draw.ellipse(
+        [x - radius, y - radius, x + radius, y + radius],
+        fill=color,
+        outline=color
+    )
+    
+    # Draw number
+    font = None
+    font_size = int(size * 0.6)
+    try:
+        font_paths = [
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "C:\\Windows\\Fonts\\arialbd.ttf",
+        ]
+        for font_path in font_paths:
+            if os.path.exists(font_path):
+                font = ImageFont.truetype(font_path, font_size)
+                break
+    except Exception:
+        pass
+    
+    if font is None:
+        font = ImageFont.load_default()
+    
+    text = str(number)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    
+    text_x = x - text_width // 2
+    text_y = y - text_height // 2 - 2  # Slight adjustment for visual centering
+    
+    draw.text((text_x, text_y), text, fill=text_color, font=font)
+    
+    _store_image(image, image_id)
+    
+    return AnnotationResult(
+        image_id=image_id,
+        message=f"Callout #{number} added at ({x}, {y})"
+    )
+
+
+@mcp.tool()
+def reset_callout_counter() -> dict[str, str]:
+    """Reset the auto-increment callout counter to 0."""
+    global _callout_counter
+    _callout_counter = 0
+    return {"message": "Callout counter reset to 0"}
+
+
+@mcp.tool()
+def add_border(
+    image_id: Annotated[str, Field(description="ID of the image")],
+    width: Annotated[int, Field(description="Border width in pixels")] = 10,
+    color: Annotated[str, Field(description="Border color")] = "#000000",
+) -> ScreenshotResult:
+    """Add a border around the entire image."""
+    from PIL import ImageOps
+    
+    image = _get_image(image_id)
+    
+    # Parse color
+    from PIL import ImageColor
+    try:
+        border_color = ImageColor.getrgb(color)
+    except ValueError:
+        border_color = (0, 0, 0)
+    
+    bordered = ImageOps.expand(image, border=width, fill=border_color)
+    _store_image(bordered, image_id)
+    
+    return ScreenshotResult(
+        image_id=image_id,
+        width=bordered.width,
+        height=bordered.height,
+        message=f"Added {width}px border"
+    )
+
+
+@mcp.tool()
+def undo(
+    image_id: Annotated[str, Field(description="ID of the image to undo")]
+) -> AnnotationResult:
+    """Undo the last annotation on an image."""
+    if image_id not in _image_history or not _image_history[image_id]:
+        raise ValueError(f"No undo history available for image '{image_id}'")
+    
+    # Restore previous state
+    _image_store[image_id] = _image_history[image_id].pop()
+    
+    remaining = len(_image_history[image_id])
+    return AnnotationResult(
+        image_id=image_id,
+        message=f"Undo successful. {remaining} more undo(s) available."
+    )
+
+
+@mcp.tool()
+def get_undo_count(
+    image_id: Annotated[str, Field(description="ID of the image")]
+) -> dict[str, int]:
+    """Get the number of available undo operations for an image."""
+    count = len(_image_history.get(image_id, []))
+    return {"image_id": image_id, "undo_count": count}
+
+
+@mcp.tool()
+def quick_save(
+    image_id: Annotated[str, Field(description="ID of the image to save")],
+    filename: Annotated[str, Field(description="Filename (without path)")] = "screenshot.png",
+    location: Annotated[
+        Literal["desktop", "downloads", "documents", "temp"],
+        Field(description="Where to save the file")
+    ] = "desktop",
+) -> SaveResult:
+    """
+    Quick save to common locations (Desktop, Downloads, Documents, or temp).
+    
+    Automatically determines the correct path based on the operating system.
+    """
+    image = _get_image(image_id)
+    
+    # Determine the save directory
+    home = Path.home()
+    
+    if sys.platform == "darwin":
+        locations = {
+            "desktop": home / "Desktop",
+            "downloads": home / "Downloads",
+            "documents": home / "Documents",
+            "temp": Path(tempfile.gettempdir()),
+        }
+    elif sys.platform == "win32":
+        locations = {
+            "desktop": home / "Desktop",
+            "downloads": home / "Downloads",
+            "documents": home / "Documents",
+            "temp": Path(tempfile.gettempdir()),
+        }
+    else:
+        # Linux
+        locations = {
+            "desktop": home / "Desktop",
+            "downloads": home / "Downloads",
+            "documents": home / "Documents",
+            "temp": Path(tempfile.gettempdir()),
+        }
+    
+    save_dir = locations.get(location, locations["desktop"])
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Handle filename conflicts
+    save_path = save_dir / filename
+    if save_path.exists():
+        base = save_path.stem
+        ext = save_path.suffix
+        counter = 1
+        while save_path.exists():
+            save_path = save_dir / f"{base}_{counter}{ext}"
+            counter += 1
+    
+    # Save the image
+    image.save(save_path, "PNG")
+    
+    return SaveResult(
+        path=str(save_path),
+        message=f"Image saved to {save_path}"
     )
 
 
