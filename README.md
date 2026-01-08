@@ -12,9 +12,17 @@ A powerful [Model Context Protocol (MCP)](https://modelcontextprotocol.io) serve
 
 - 🧠 **Unified `annotate` Tool** - One tool for all annotation types
 - 📍 **Flexible Positioning** - Named positions ("top-left", "center"), percentages ("50%,30%"), or pixels
+- ⚓ **Anchor & Offset** - Control which part of annotation aligns to position, with pixel-level fine-tuning
 - 🔄 **Auto-Adjust** - Annotations automatically stay within image bounds
 - ⚡ **Batch Annotations** - Apply multiple annotations in a single call
 - 🏷️ **Quick Labeling** - Label multiple regions with one command
+- 🎯 **Pixel-Perfect Mode** - `precise_annotate` for exact coordinate control
+
+### 🤖 AI Vision Integration
+
+- Works great with **Gemini**, **Claude**, and other vision models for intelligent annotation placement
+- AI can analyze images and provide exact coordinates for annotations
+- Combine vision analysis with `precise_annotate` for pinpoint accuracy
 
 ### Capture & Load
 
@@ -71,6 +79,18 @@ Step-by-step guides with numbered markers:
 Highlight important sections and mark areas for blur:
 
 ![Highlights](docs/example-highlight.png)
+
+### Pixel-Perfect Annotations
+
+Using `precise_annotate` with exact coordinates:
+
+![Pixel Perfect](docs/pixel_perfect_v2.png)
+
+### PII Redaction
+
+Blur or redact sensitive information:
+
+![PII Redacted](docs/mcp_tools_demo.png)
 
 ## Quick Start
 
@@ -187,31 +207,53 @@ mcp-screenshot-server --transport sse --port 8000
 
 These tools use flexible positioning and auto-adjustment for easier annotation:
 
-| Tool             | Description                                   |
-| ---------------- | --------------------------------------------- |
-| `annotate`       | Unified annotation with smart positioning     |
-| `batch_annotate` | Apply multiple annotations in ONE call        |
-| `label_regions`  | Quickly label multiple areas with one command |
+| Tool               | Description                                      |
+| ------------------ | ------------------------------------------------ |
+| `annotate`         | Unified annotation with smart positioning        |
+| `precise_annotate` | **Pixel-perfect** annotations at exact coords    |
+| `batch_annotate`   | Apply multiple annotations in ONE call           |
+| `label_regions`    | Quickly label multiple areas with one command    |
 
 **Position Formats:**
 
-- **Named**: `"top-left"`, `"center"`, `"bottom-right"`, etc.
+- **Named**: `"top-left"`, `"center"`, `"bottom-right"`, `"top-right-quarter"`, etc.
 - **Percentage**: `"50%, 30%"` (from top-left)
-- **Pixels**: `"100, 200"` (absolute coordinates)
+- **Pixels**: `"100px, 200px"` (absolute coordinates)
+
+**Anchor Options** (controls which part of annotation aligns to position):
+
+- `"top-left"`, `"top-center"`, `"top-right"`
+- `"center-left"`, `"center"`, `"center-right"`
+- `"bottom-left"`, `"bottom-center"`, `"bottom-right"`
 
 **Examples:**
 
 ```python
-# Single smart annotation
-annotate(img, "box", "top-left", width=200, color="blue")
-annotate(img, "text", "center", text="Important!")
-annotate(img, "arrow", "20%,50%", end_position="80%,50%")
+# Smart annotation with anchor and offset
+annotate(img, "box", "830px, 195px", width=140, height=55, 
+         anchor="top-left", offset_x=0, offset_y=0)
+
+# Pixel-perfect annotation (no transformations)
+precise_annotate(img, "box", x=830, y=195, width=140, height=55, color="blue")
+precise_annotate(img, "text", x=830, y=168, text="Code Button", font_size=24)
+precise_annotate(img, "arrow", x=100, y=200, x2=300, y2=200, color="red")
 
 # Multiple annotations in one call
 batch_annotate(img, '[{"type":"box","position":"top-left"},{"type":"text","position":"center","text":"Hello"}]')
 
 # Label multiple regions at once
 label_regions(img, '{"Header":"top-center","Sidebar":"center-left","Main":"center"}')
+```
+
+### 🤖 Using with AI Vision Models
+
+For the most accurate annotations, combine with vision-capable AI models:
+
+```
+1. Take screenshot with browser/capture tool
+2. AI (Gemini/Claude) analyzes image and identifies element coordinates
+3. Use precise_annotate with exact coordinates from AI
+4. Result: pixel-perfect annotations every time
 ```
 
 ### Screenshot Capture
@@ -223,16 +265,17 @@ label_regions(img, '{"Header":"top-center","Sidebar":"center-left","Main":"cente
 
 ### Basic Annotation Tools (for pixel-precise control)
 
-| Tool                   | Description                             |
-| ---------------------- | --------------------------------------- |
-| `add_box`              | Draw rectangles/boxes on images         |
-| `add_line`             | Draw lines on images                    |
-| `add_arrow`            | Draw arrows on images                   |
-| `add_text`             | Add text annotations                    |
-| `add_circle`           | Draw circles/ellipses                   |
-| `add_highlight`        | Add semi-transparent highlight regions  |
-| `add_numbered_callout` | Add auto-numbered callouts (1, 2, 3...) |
-| `add_border`           | Add border around entire image          |
+| Tool                   | Description                                |
+| ---------------------- | ------------------------------------------ |
+| `precise_annotate`     | **NEW!** Pixel-perfect multi-type tool     |
+| `add_box`              | Draw rectangles/boxes on images            |
+| `add_line`             | Draw lines on images                       |
+| `add_arrow`            | Draw arrows on images                      |
+| `add_text`             | Add text annotations                       |
+| `add_circle`           | Draw circles/ellipses                      |
+| `add_highlight`        | Add semi-transparent highlight regions     |
+| `add_numbered_callout` | Add auto-numbered callouts (1, 2, 3...)    |
+| `add_border`           | Add border around entire image             |
 
 ### Editing Tools
 
