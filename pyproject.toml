@@ -52,12 +52,12 @@ Issues = "https://github.com/aamar-shahzad/mcp-screenshot-server/issues"
 packages = ["src/mcp_screenshot_server"]
 
 [tool.ruff]
-line-length = 100
+line-length = 120
 target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
-ignore = []
+ignore = ["E501"]  # Line length handled separately
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
