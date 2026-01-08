@@ -207,12 +207,12 @@ mcp-screenshot-server --transport sse --port 8000
 
 These tools use flexible positioning and auto-adjustment for easier annotation:
 
-| Tool               | Description                                      |
-| ------------------ | ------------------------------------------------ |
-| `annotate`         | Unified annotation with smart positioning        |
-| `precise_annotate` | **Pixel-perfect** annotations at exact coords    |
-| `batch_annotate`   | Apply multiple annotations in ONE call           |
-| `label_regions`    | Quickly label multiple areas with one command    |
+| Tool               | Description                                   |
+| ------------------ | --------------------------------------------- |
+| `annotate`         | Unified annotation with smart positioning     |
+| `precise_annotate` | **Pixel-perfect** annotations at exact coords |
+| `batch_annotate`   | Apply multiple annotations in ONE call        |
+| `label_regions`    | Quickly label multiple areas with one command |
 
 **Position Formats:**
 
@@ -230,7 +230,7 @@ These tools use flexible positioning and auto-adjustment for easier annotation:
 
 ```python
 # Smart annotation with anchor and offset
-annotate(img, "box", "830px, 195px", width=140, height=55, 
+annotate(img, "box", "830px, 195px", width=140, height=55,
          anchor="top-left", offset_x=0, offset_y=0)
 
 # Pixel-perfect annotation (no transformations)
@@ -265,17 +265,17 @@ For the most accurate annotations, combine with vision-capable AI models:
 
 ### Basic Annotation Tools (for pixel-precise control)
 
-| Tool                   | Description                                |
-| ---------------------- | ------------------------------------------ |
-| `precise_annotate`     | **NEW!** Pixel-perfect multi-type tool     |
-| `add_box`              | Draw rectangles/boxes on images            |
-| `add_line`             | Draw lines on images                       |
-| `add_arrow`            | Draw arrows on images                      |
-| `add_text`             | Add text annotations                       |
-| `add_circle`           | Draw circles/ellipses                      |
-| `add_highlight`        | Add semi-transparent highlight regions     |
-| `add_numbered_callout` | Add auto-numbered callouts (1, 2, 3...)    |
-| `add_border`           | Add border around entire image             |
+| Tool                   | Description                             |
+| ---------------------- | --------------------------------------- |
+| `precise_annotate`     | **NEW!** Pixel-perfect multi-type tool  |
+| `add_box`              | Draw rectangles/boxes on images         |
+| `add_line`             | Draw lines on images                    |
+| `add_arrow`            | Draw arrows on images                   |
+| `add_text`             | Add text annotations                    |
+| `add_circle`           | Draw circles/ellipses                   |
+| `add_highlight`        | Add semi-transparent highlight regions  |
+| `add_numbered_callout` | Add auto-numbered callouts (1, 2, 3...) |
+| `add_border`           | Add border around entire image          |
 
 ### Editing Tools
 
