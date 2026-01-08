@@ -21,37 +21,39 @@ mcp = FastMCP(
     instructions="""
     MCP Screenshot Server - A powerful tool for capturing and annotating screenshots.
     
+    ## 🎯 RECOMMENDED: Smart Annotation Tools (Use These!)
+    
+    ### annotate - Unified smart annotation with flexible positioning
+    Position formats: named ("top-left", "center", "bottom-right"), 
+                     percentage ("50%, 30%"), or pixels ("100, 200")
+    Example: annotate(img, "box", "top-left", width=200, color="blue")
+    Example: annotate(img, "text", "center", text="Important!")
+    Example: annotate(img, "arrow", "20%,50%", end_position="80%,50%")
+    
+    ### batch_annotate - Apply multiple annotations in ONE call
+    Pass JSON array: [{"type":"box","position":"top-left"},{"type":"text","position":"center","text":"Hi"}]
+    
+    ### label_regions - Quickly label multiple areas
+    Pass JSON object: {"Header":"top-center", "Sidebar":"center-left", "Main":"center"}
+    
     ## Capture Tools:
-    - capture_screenshot: Capture full screen, window, or region screenshots
+    - capture_screenshot: Capture full screen, window, or region
     - load_image: Load an existing image file
     
-    ## Annotation Tools:
-    - add_box: Draw rectangles/boxes
-    - add_line: Draw lines
-    - add_arrow: Draw arrows
-    - add_text: Add text labels
-    - add_circle: Draw circles
-    - add_highlight: Semi-transparent highlights
-    - add_numbered_callout: Add numbered callouts (1, 2, 3...)
-    - add_border: Add border around entire image
+    ## Basic Annotation Tools (for precise pixel control):
+    - add_box, add_line, add_arrow, add_text, add_circle, add_highlight
+    - add_numbered_callout, add_border
     
     ## Editing Tools:
-    - blur_region: Blur/pixelate sensitive areas (passwords, emails)
-    - crop_image: Crop to specific region
-    - resize_image: Resize with scale or dimensions
-    - undo: Undo last annotation
+    - blur_region, crop_image, resize_image, rotate_image, flip_image
+    - adjust_brightness, adjust_contrast, add_watermark
+    - undo, get_undo_count
     
     ## Export Tools:
-    - save_image: Save to specific path
-    - quick_save: Save to Desktop/Downloads/Documents
-    - copy_to_clipboard: Copy to clipboard
-    - open_in_preview: Open in native Preview.app (macOS)
+    - save_image, quick_save, copy_to_clipboard, open_in_preview
     
     ## Session Tools:
-    - list_images: List all images in session
-    - get_image: View/retrieve an image
-    - duplicate_image: Create a copy
-    - delete_image: Remove from session
+    - list_images, get_image, duplicate_image, delete_image
     """,
 )
 
@@ -472,6 +474,419 @@ def add_highlight(
     return AnnotationResult(
         image_id=image_id,
         message=f"Highlight added at ({x}, {y}) with size {width}x{height}"
+    )
+
+
+# =============================================================================
+# Smart Annotation Tools (Unified & Auto-Positioning)
+# =============================================================================
+
+# Named position aliases
+_NAMED_POSITIONS = {
+    "top-left": (0.05, 0.05),
+    "top-center": (0.5, 0.05),
+    "top-right": (0.95, 0.05),
+    "center-left": (0.05, 0.5),
+    "center": (0.5, 0.5),
+    "center-right": (0.95, 0.5),
+    "bottom-left": (0.05, 0.95),
+    "bottom-center": (0.5, 0.95),
+    "bottom-right": (0.95, 0.95),
+}
+
+
+def _parse_position(
+    pos: str | tuple[float, float] | None,
+    image_width: int,
+    image_height: int,
+    element_width: int = 0,
+    element_height: int = 0,
+) -> tuple[int, int]:
+    """
+    Parse position from named position, percentage, or pixels.
+    
+    Formats:
+    - Named: "top-left", "center", "bottom-right", etc.
+    - Percentage: "50%, 30%" or (0.5, 0.3)
+    - Pixels: "100, 200" (if values > 1 without %)
+    """
+    if pos is None:
+        return (0, 0)
+    
+    if isinstance(pos, tuple):
+        px, py = pos
+    elif pos in _NAMED_POSITIONS:
+        px, py = _NAMED_POSITIONS[pos]
+    else:
+        # Parse string like "50%, 30%" or "100, 200"
+        parts = [p.strip() for p in pos.split(",")]
+        if len(parts) != 2:
+            raise ValueError(f"Invalid position format: {pos}")
+        
+        def parse_value(v: str, max_val: int) -> float:
+            v = v.strip()
+            if v.endswith("%"):
+                return float(v[:-1]) / 100.0
+            val = float(v)
+            # If > 1, treat as pixels and convert to ratio
+            if val > 1:
+                return val / max_val
+            return val
+        
+        px = parse_value(parts[0], image_width)
+        py = parse_value(parts[1], image_height)
+    
+    # Convert ratios to pixels, adjusting for element size
+    x = int(px * image_width - element_width / 2) if px <= 1 else int(px)
+    y = int(py * image_height - element_height / 2) if py <= 1 else int(py)
+    
+    # Clamp to image bounds
+    x = max(0, min(x, image_width - element_width))
+    y = max(0, min(y, image_height - element_height))
+    
+    return (x, y)
+
+
+def _auto_adjust_position(
+    x: int, y: int,
+    width: int, height: int,
+    image_width: int, image_height: int,
+    padding: int = 10
+) -> tuple[int, int]:
+    """Auto-adjust position to keep annotation within bounds with padding."""
+    # Ensure annotation stays within image bounds with padding
+    x = max(padding, min(x, image_width - width - padding))
+    y = max(padding, min(y, image_height - height - padding))
+    return (x, y)
+
+
+class AnnotationSpec(BaseModel):
+    """Specification for a single annotation."""
+    type: Literal["box", "circle", "arrow", "text", "highlight", "line", "callout"]
+    position: str = Field(description="Position: 'top-left', 'center', '50%,30%', or '100,200'")
+    text: str | None = Field(default=None, description="Text for text/callout annotations")
+    width: int | None = Field(default=None, description="Width for box/highlight")
+    height: int | None = Field(default=None, description="Height for box/highlight")
+    radius: int | None = Field(default=None, description="Radius for circle")
+    end_position: str | None = Field(default=None, description="End position for arrow/line")
+    color: str = Field(default="red", description="Color")
+    line_width: int = Field(default=3, description="Line width")
+    font_size: int = Field(default=24, description="Font size for text")
+
+
+@mcp.tool()
+def annotate(
+    image_id: Annotated[str, Field(description="ID of the image to annotate")],
+    type: Annotated[
+        Literal["box", "circle", "arrow", "text", "highlight", "line", "callout"],
+        Field(description="Type of annotation")
+    ],
+    position: Annotated[
+        str,
+        Field(description="Position: named ('top-left', 'center', 'bottom-right'), percentage ('50%,30%'), or pixels ('100,200')")
+    ] = "center",
+    text: Annotated[str | None, Field(description="Text content (for text/callout types)")] = None,
+    width: Annotated[int | None, Field(description="Width in pixels or percentage of image")] = None,
+    height: Annotated[int | None, Field(description="Height in pixels or percentage of image")] = None,
+    radius: Annotated[int | None, Field(description="Radius for circles")] = None,
+    end_position: Annotated[str | None, Field(description="End position for arrows/lines")] = None,
+    color: Annotated[str, Field(description="Color")] = "red",
+    line_width: Annotated[int, Field(description="Line width")] = 3,
+    font_size: Annotated[int, Field(description="Font size for text")] = 24,
+    auto_adjust: Annotated[bool, Field(description="Auto-adjust to stay within bounds")] = True,
+) -> AnnotationResult:
+    """
+    Smart unified annotation tool with flexible positioning.
+    
+    Position formats:
+    - Named: "top-left", "top-center", "top-right", "center-left", "center", 
+             "center-right", "bottom-left", "bottom-center", "bottom-right"
+    - Percentage: "50%, 30%" (from top-left corner)
+    - Pixels: "100, 200" (absolute x, y)
+    
+    Examples:
+    - annotate(img, "box", "center", width=200, height=100, color="blue")
+    - annotate(img, "text", "top-right", text="Important!", color="red")
+    - annotate(img, "arrow", "20%,80%", end_position="80%,20%", color="green")
+    - annotate(img, "circle", "center", radius=50, color="yellow")
+    """
+    image = _get_image(image_id)
+    img_w, img_h = image.size
+    
+    # Calculate default sizes based on image
+    default_width = max(100, img_w // 5)
+    default_height = max(60, img_h // 8)
+    default_radius = max(30, min(img_w, img_h) // 10)
+    
+    # Use provided or default values
+    w = width or default_width
+    h = height or default_height
+    r = radius or default_radius
+    
+    # Parse start position
+    x, y = _parse_position(position, img_w, img_h, w, h)
+    
+    # Auto-adjust if enabled
+    if auto_adjust:
+        if type in ["box", "highlight"]:
+            x, y = _auto_adjust_position(x, y, w, h, img_w, img_h)
+        elif type == "circle":
+            x, y = _auto_adjust_position(x - r, y - r, r * 2, r * 2, img_w, img_h)
+            x, y = x + r, y + r  # Convert back to center
+    
+    draw = ImageDraw.Draw(image, "RGBA")
+    message = ""
+    
+    if type == "box":
+        draw.rectangle([x, y, x + w, y + h], outline=color, width=line_width)
+        message = f"Box at ({x},{y}) size {w}x{h}"
+    
+    elif type == "circle":
+        bbox = [x - r, y - r, x + r, y + r]
+        draw.ellipse(bbox, outline=color, width=line_width)
+        message = f"Circle at ({x},{y}) radius {r}"
+    
+    elif type == "text":
+        if not text:
+            text = "Label"
+        # Get font
+        font = None
+        try:
+            font_paths = [
+                "/System/Library/Fonts/Helvetica.ttc",
+                "/System/Library/Fonts/SFNSText.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "C:\\Windows\\Fonts\\arial.ttf",
+            ]
+            for font_path in font_paths:
+                if os.path.exists(font_path):
+                    font = ImageFont.truetype(font_path, font_size)
+                    break
+        except (OSError, IOError):
+            pass
+        if font is None:
+            font = ImageFont.load_default()
+        
+        # Add background for readability
+        bbox = draw.textbbox((x, y), text, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+        
+        if auto_adjust:
+            x, y = _auto_adjust_position(x, y, text_w + 10, text_h + 6, img_w, img_h)
+        
+        # Draw background
+        draw.rectangle([x - 3, y - 3, x + text_w + 6, y + text_h + 6], fill=(0, 0, 0, 180))
+        draw.text((x, y), text, fill=color, font=font)
+        message = f"Text '{text}' at ({x},{y})"
+    
+    elif type == "callout":
+        # Use numbered callout
+        global _callout_counter
+        _callout_counter += 1
+        num = str(_callout_counter)
+        callout_r = max(15, font_size // 2 + 5)
+        
+        # Draw circle background
+        draw.ellipse(
+            [x - callout_r, y - callout_r, x + callout_r, y + callout_r],
+            fill=color, outline="white", width=2
+        )
+        
+        # Draw number
+        font = None
+        try:
+            font_paths = ["/System/Library/Fonts/Helvetica.ttc", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
+            for font_path in font_paths:
+                if os.path.exists(font_path):
+                    font = ImageFont.truetype(font_path, font_size)
+                    break
+        except (OSError, IOError):
+            pass
+        if font is None:
+            font = ImageFont.load_default()
+        
+        bbox = draw.textbbox((0, 0), num, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        draw.text((x - tw // 2, y - th // 2 - 2), num, fill="white", font=font)
+        
+        # Add label if provided
+        if text:
+            draw.text((x + callout_r + 5, y - th // 2), text, fill=color, font=font)
+        
+        message = f"Callout #{_callout_counter} at ({x},{y})" + (f" '{text}'" if text else "")
+    
+    elif type in ["arrow", "line"]:
+        if not end_position:
+            # Default: draw toward center
+            ex, ey = img_w // 2, img_h // 2
+        else:
+            ex, ey = _parse_position(end_position, img_w, img_h)
+        
+        draw.line([(x, y), (ex, ey)], fill=color, width=line_width)
+        
+        if type == "arrow":
+            # Draw arrowhead
+            import math
+            angle = math.atan2(ey - y, ex - x)
+            head_size = line_width * 5
+            
+            left_x = ex - head_size * math.cos(angle - math.pi / 6)
+            left_y = ey - head_size * math.sin(angle - math.pi / 6)
+            right_x = ex - head_size * math.cos(angle + math.pi / 6)
+            right_y = ey - head_size * math.sin(angle + math.pi / 6)
+            
+            draw.polygon([(ex, ey), (left_x, left_y), (right_x, right_y)], fill=color)
+            message = f"Arrow from ({x},{y}) to ({ex},{ey})"
+        else:
+            message = f"Line from ({x},{y}) to ({ex},{ey})"
+    
+    elif type == "highlight":
+        from PIL import ImageColor
+        try:
+            rgb = ImageColor.getrgb(color)
+            rgba = (*rgb, 100)
+        except ValueError:
+            rgba = (255, 255, 0, 100)
+        
+        overlay = PILImage.new("RGBA", image.size, (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        overlay_draw.rectangle([x, y, x + w, y + h], fill=rgba)
+        image = PILImage.alpha_composite(image.convert("RGBA"), overlay)
+        image = image.convert("RGB")
+        message = f"Highlight at ({x},{y}) size {w}x{h}"
+    
+    _store_image(image, image_id)
+    
+    return AnnotationResult(image_id=image_id, message=message)
+
+
+@mcp.tool()
+def batch_annotate(
+    image_id: Annotated[str, Field(description="ID of the image to annotate")],
+    annotations: Annotated[
+        str,
+        Field(description="""JSON array of annotations. Each object has:
+        - type: "box"|"circle"|"arrow"|"text"|"highlight"|"line"|"callout"
+        - position: "top-left", "center", "50%,30%", or "100,200"
+        - Optional: text, width, height, radius, end_position, color, line_width, font_size
+        
+        Example: [{"type":"box","position":"top-left","width":100,"height":50,"color":"blue"},{"type":"text","position":"center","text":"Hello"}]""")
+    ],
+) -> AnnotationResult:
+    """
+    Apply multiple annotations in a single call.
+    
+    Pass a JSON array of annotation specs. Each annotation follows the same
+    format as the annotate() tool.
+    
+    Example:
+    [
+        {"type": "box", "position": "top-left", "width": 200, "height": 100, "color": "blue"},
+        {"type": "text", "position": "top-left", "text": "Header Area"},
+        {"type": "arrow", "position": "center-left", "end_position": "center-right", "color": "green"},
+        {"type": "callout", "position": "bottom-right", "text": "Click here"}
+    ]
+    """
+    import json
+    
+    try:
+        specs = json.loads(annotations)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON: {e}")
+    
+    if not isinstance(specs, list):
+        raise ValueError("annotations must be a JSON array")
+    
+    messages = []
+    for i, spec in enumerate(specs):
+        if not isinstance(spec, dict):
+            raise ValueError(f"Annotation {i} must be an object")
+        
+        ann_type = spec.get("type")
+        if not ann_type:
+            raise ValueError(f"Annotation {i} missing 'type'")
+        
+        result = annotate(
+            image_id=image_id,
+            type=ann_type,
+            position=spec.get("position", "center"),
+            text=spec.get("text"),
+            width=spec.get("width"),
+            height=spec.get("height"),
+            radius=spec.get("radius"),
+            end_position=spec.get("end_position"),
+            color=spec.get("color", "red"),
+            line_width=spec.get("line_width", 3),
+            font_size=spec.get("font_size", 24),
+            auto_adjust=spec.get("auto_adjust", True),
+        )
+        messages.append(result.message)
+    
+    return AnnotationResult(
+        image_id=image_id,
+        message=f"Applied {len(specs)} annotations: " + "; ".join(messages)
+    )
+
+
+@mcp.tool()
+def label_regions(
+    image_id: Annotated[str, Field(description="ID of the image to label")],
+    regions: Annotated[
+        str,
+        Field(description="""JSON object mapping region names to positions.
+        Example: {"Header": "top-center", "Sidebar": "center-left", "Main Content": "center", "Footer": "bottom-center"}""")
+    ],
+    style: Annotated[
+        Literal["box", "callout", "text"],
+        Field(description="Style of labels")
+    ] = "callout",
+    color: Annotated[str, Field(description="Color for all labels")] = "red",
+) -> AnnotationResult:
+    """
+    Quickly label multiple regions of an image.
+    
+    Pass a JSON object mapping region names to positions.
+    
+    Example:
+    {
+        "Navigation": "top-left",
+        "Search Bar": "top-center",
+        "User Menu": "top-right",
+        "Sidebar": "center-left",
+        "Main Content": "center",
+        "Footer": "bottom-center"
+    }
+    """
+    import json
+    
+    try:
+        region_map = json.loads(regions)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON: {e}")
+    
+    if not isinstance(region_map, dict):
+        raise ValueError("regions must be a JSON object")
+    
+    # Reset callout counter for consistent numbering
+    global _callout_counter
+    _callout_counter = 0
+    
+    messages = []
+    for name, position in region_map.items():
+        # Apply annotation (result is used implicitly - modifies image in store)
+        annotate(
+            image_id=image_id,
+            type=style,
+            position=position,
+            text=name,
+            color=color,
+        )
+        messages.append(f"{name} at {position}")
+    
+    return AnnotationResult(
+        image_id=image_id,
+        message=f"Labeled {len(region_map)} regions: " + ", ".join(messages)
     )
 
 

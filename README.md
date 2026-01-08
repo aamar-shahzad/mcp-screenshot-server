@@ -8,6 +8,14 @@ A powerful [Model Context Protocol (MCP)](https://modelcontextprotocol.io) serve
 
 ## Features
 
+### 🎯 Smart Annotation (NEW!)
+
+- 🧠 **Unified `annotate` Tool** - One tool for all annotation types
+- 📍 **Flexible Positioning** - Named positions ("top-left", "center"), percentages ("50%,30%"), or pixels
+- 🔄 **Auto-Adjust** - Annotations automatically stay within image bounds
+- ⚡ **Batch Annotations** - Apply multiple annotations in a single call
+- 🏷️ **Quick Labeling** - Label multiple regions with one command
+
 ### Capture & Load
 
 - 📷 **Screenshot Capture** - Full screen, region, or window-specific captures
@@ -175,6 +183,37 @@ mcp-screenshot-server --transport sse --port 8000
 
 ## Available Tools
 
+### 🎯 Smart Annotation Tools (Recommended!)
+
+These tools use flexible positioning and auto-adjustment for easier annotation:
+
+| Tool             | Description                                   |
+| ---------------- | --------------------------------------------- |
+| `annotate`       | Unified annotation with smart positioning     |
+| `batch_annotate` | Apply multiple annotations in ONE call        |
+| `label_regions`  | Quickly label multiple areas with one command |
+
+**Position Formats:**
+
+- **Named**: `"top-left"`, `"center"`, `"bottom-right"`, etc.
+- **Percentage**: `"50%, 30%"` (from top-left)
+- **Pixels**: `"100, 200"` (absolute coordinates)
+
+**Examples:**
+
+```python
+# Single smart annotation
+annotate(img, "box", "top-left", width=200, color="blue")
+annotate(img, "text", "center", text="Important!")
+annotate(img, "arrow", "20%,50%", end_position="80%,50%")
+
+# Multiple annotations in one call
+batch_annotate(img, '[{"type":"box","position":"top-left"},{"type":"text","position":"center","text":"Hello"}]')
+
+# Label multiple regions at once
+label_regions(img, '{"Header":"top-center","Sidebar":"center-left","Main":"center"}')
+```
+
 ### Screenshot Capture
 
 | Tool                 | Description                                        |
@@ -182,7 +221,7 @@ mcp-screenshot-server --transport sse --port 8000
 | `capture_screenshot` | Capture full screen, region, or window screenshots |
 | `load_image`         | Load an existing image file for annotation         |
 
-### Annotation Tools
+### Basic Annotation Tools (for pixel-precise control)
 
 | Tool                   | Description                             |
 | ---------------------- | --------------------------------------- |

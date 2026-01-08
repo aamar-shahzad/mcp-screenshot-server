@@ -295,3 +295,137 @@ class TestImageManagement:
         assert "deleted successfully" in result["message"]
         assert image_id not in server._image_store
 
+
+class TestSmartAnnotation:
+    """Test smart annotation tools."""
+
+    @pytest.fixture
+    def test_image(self):
+        """Create a test image."""
+        img = PILImage.new("RGB", (400, 300), color="white")
+        image_id = server._store_image(img)
+        yield image_id
+        # Clean up
+        if image_id in server._image_store:
+            del server._image_store[image_id]
+        if image_id in server._image_history:
+            del server._image_history[image_id]
+
+    def test_annotate_box_named_position(self, test_image):
+        """Test annotate with named position."""
+        result = server.annotate(
+            image_id=test_image,
+            type="box",
+            position="top-left",
+            width=100,
+            height=50,
+            color="blue"
+        )
+        assert "Box at" in result.message
+
+    def test_annotate_box_percentage_position(self, test_image):
+        """Test annotate with percentage position."""
+        result = server.annotate(
+            image_id=test_image,
+            type="box",
+            position="50%, 50%",
+            width=100,
+            height=50,
+            color="red"
+        )
+        assert "Box at" in result.message
+
+    def test_annotate_text(self, test_image):
+        """Test annotate text."""
+        result = server.annotate(
+            image_id=test_image,
+            type="text",
+            position="center",
+            text="Hello World",
+            color="green"
+        )
+        assert "Text 'Hello World'" in result.message
+
+    def test_annotate_circle(self, test_image):
+        """Test annotate circle."""
+        result = server.annotate(
+            image_id=test_image,
+            type="circle",
+            position="center",
+            radius=50,
+            color="purple"
+        )
+        assert "Circle at" in result.message
+
+    def test_annotate_arrow(self, test_image):
+        """Test annotate arrow."""
+        result = server.annotate(
+            image_id=test_image,
+            type="arrow",
+            position="20%, 50%",
+            end_position="80%, 50%",
+            color="orange"
+        )
+        assert "Arrow from" in result.message
+
+    def test_annotate_callout(self, test_image):
+        """Test annotate callout."""
+        result = server.annotate(
+            image_id=test_image,
+            type="callout",
+            position="bottom-right",
+            text="Important!",
+            color="red"
+        )
+        assert "Callout #" in result.message
+
+    def test_batch_annotate(self, test_image):
+        """Test batch annotation."""
+        annotations = '[{"type":"box","position":"top-left","width":50,"height":30},{"type":"text","position":"center","text":"Test"}]'
+        result = server.batch_annotate(
+            image_id=test_image,
+            annotations=annotations
+        )
+        assert "Applied 2 annotations" in result.message
+
+    def test_label_regions(self, test_image):
+        """Test label regions."""
+        regions = '{"Header": "top-center", "Sidebar": "center-left", "Main": "center"}'
+        result = server.label_regions(
+            image_id=test_image,
+            regions=regions,
+            style="callout",
+            color="blue"
+        )
+        assert "Labeled 3 regions" in result.message
+
+
+class TestPositionParsing:
+    """Test position parsing helper."""
+
+    def test_parse_named_position(self):
+        """Test parsing named positions."""
+        x, y = server._parse_position("center", 400, 300)
+        assert 150 <= x <= 250  # Around center (with element adjustment)
+        assert 100 <= y <= 200
+
+    def test_parse_percentage_position(self):
+        """Test parsing percentage positions."""
+        x, y = server._parse_position("25%, 75%", 400, 300, 0, 0)
+        assert x == 100  # 25% of 400
+        assert y == 225  # 75% of 300
+
+    def test_parse_pixel_position(self):
+        """Test parsing pixel positions."""
+        x, y = server._parse_position("150, 200", 400, 300, 0, 0)
+        # Values > 1 are treated as pixels, converted to ratio then back
+        assert x > 0
+        assert y > 0
+
+    def test_auto_adjust_keeps_in_bounds(self):
+        """Test auto-adjust keeps annotations in bounds."""
+        # Try to place at edge
+        x, y = server._auto_adjust_position(395, 295, 50, 30, 400, 300)
+        assert x + 50 <= 400  # Width stays in bounds
+        assert y + 30 <= 300  # Height stays in bounds
+
