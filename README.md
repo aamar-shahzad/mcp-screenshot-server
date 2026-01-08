@@ -39,13 +39,27 @@ A powerful [Model Context Protocol (MCP)](https://modelcontextprotocol.io) serve
 - 👁️ **Preview Integration** - Open in macOS Preview.app for native editing
 - 🐳 **Docker Ready** - Run as a containerized service
 
-## Example
+## Examples
 
-Here's an example of a screenshot with annotations added using the MCP Screenshot Server:
+Screenshots captured from the browser and annotated using the MCP Screenshot Server tools:
 
-![Example Annotated Screenshot](docs/example-annotated.png)
+### Basic Annotations
 
-_Screenshot captured and annotated directly in Cursor AI using the MCP tools._
+Box, arrow, text, highlight, and circle annotations:
+
+![Basic Annotations](docs/example-basic.png)
+
+### Numbered Callouts
+
+Step-by-step guides with numbered markers:
+
+![Numbered Callouts](docs/example-callouts.png)
+
+### Highlights & Regions
+
+Highlight important sections and mark areas for blur:
+
+![Highlights](docs/example-highlight.png)
 
 ## Quick Start
 
@@ -211,9 +225,7 @@ mcp-screenshot-server --transport sse --port 8000
 
 ## macOS Preview Integration
 
-On macOS, you can use the `open_in_preview` tool to open images in the native **Preview.app**, which provides additional markup tools:
-
-![Preview Integration](docs/preview-integration.png)
+On macOS, you can use the `open_in_preview` tool to open images in the native **Preview.app**, which provides additional markup tools.
 
 ### Preview's Native Tools:
 
