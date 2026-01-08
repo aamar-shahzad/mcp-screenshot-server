@@ -634,6 +634,96 @@ class AnnotationSpec(BaseModel):
 
 
 @mcp.tool()
+def precise_annotate(
+    image_id: Annotated[str, Field(description="ID of the image to annotate")],
+    type: Annotated[
+        Literal["box", "circle", "text", "arrow", "line"],
+        Field(description="Type of annotation")
+    ],
+    x: Annotated[int, Field(description="X coordinate in pixels (from left edge)")],
+    y: Annotated[int, Field(description="Y coordinate in pixels (from top edge)")],
+    text: Annotated[str | None, Field(description="Text content (for text type)")] = None,
+    width: Annotated[int, Field(description="Width in pixels (for box)")] = 100,
+    height: Annotated[int, Field(description="Height in pixels (for box)")] = 50,
+    radius: Annotated[int, Field(description="Radius in pixels (for circle)")] = 30,
+    x2: Annotated[int | None, Field(description="End X coordinate (for arrow/line)")] = None,
+    y2: Annotated[int | None, Field(description="End Y coordinate (for arrow/line)")] = None,
+    color: Annotated[str, Field(description="Color (name or hex)")] = "red",
+    line_width: Annotated[int, Field(description="Line/border width")] = 3,
+    font_size: Annotated[int, Field(description="Font size for text")] = 24,
+) -> AnnotationResult:
+    """
+    Pixel-perfect annotation tool. Places annotations at EXACT pixel coordinates.
+    No anchor adjustments, no auto-positioning - pure pixel placement.
+
+    Coordinates:
+    - x, y: Top-left corner for box, center for circle, start for text
+    - x2, y2: End point for arrows/lines
+
+    Examples:
+    - precise_annotate(img, "box", x=100, y=200, width=150, height=50)
+    - precise_annotate(img, "text", x=100, y=180, text="Label")
+    - precise_annotate(img, "arrow", x=50, y=100, x2=200, y2=100)
+    - precise_annotate(img, "circle", x=300, y=300, radius=40)
+    """
+    image = _get_image(image_id)
+    draw = ImageDraw.Draw(image, "RGBA")
+    message = ""
+
+    if type == "box":
+        draw.rectangle([x, y, x + width, y + height], outline=color, width=line_width)
+        message = f"Box at ({x}, {y}) size {width}x{height}"
+
+    elif type == "circle":
+        bbox = [x - radius, y - radius, x + radius, y + radius]
+        draw.ellipse(bbox, outline=color, width=line_width)
+        message = f"Circle at ({x}, {y}) radius {radius}"
+
+    elif type == "text":
+        if not text:
+            raise ValueError("text parameter required for text type")
+        try:
+            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
+        except (OSError, IOError):
+            font = ImageFont.load_default()
+        # Add background for readability
+        bbox = draw.textbbox((x, y), text, font=font)
+        padding = 4
+        draw.rectangle(
+            [bbox[0] - padding, bbox[1] - padding, bbox[2] + padding, bbox[3] + padding],
+            fill="white"
+        )
+        draw.text((x, y), text, fill=color, font=font)
+        message = f"Text '{text}' at ({x}, {y})"
+
+    elif type == "arrow":
+        if x2 is None or y2 is None:
+            raise ValueError("x2 and y2 required for arrow type")
+        import math
+        draw.line([(x, y), (x2, y2)], fill=color, width=line_width)
+        # Draw arrowhead
+        angle = math.atan2(y2 - y, x2 - x)
+        head_size = 15
+        left_angle = angle + math.pi * 0.85
+        right_angle = angle - math.pi * 0.85
+        left_x = x2 + head_size * math.cos(left_angle)
+        left_y = y2 + head_size * math.sin(left_angle)
+        right_x = x2 + head_size * math.cos(right_angle)
+        right_y = y2 + head_size * math.sin(right_angle)
+        draw.polygon([(x2, y2), (left_x, left_y), (right_x, right_y)], fill=color)
+        message = f"Arrow from ({x}, {y}) to ({x2}, {y2})"
+
+    elif type == "line":
+        if x2 is None or y2 is None:
+            raise ValueError("x2 and y2 required for line type")
+        draw.line([(x, y), (x2, y2)], fill=color, width=line_width)
+        message = f"Line from ({x}, {y}) to ({x2}, {y2})"
+
+    _store_image(image, image_id)
+    return AnnotationResult(image_id=image_id, message=message)
+
+
+@mcp.tool()
 def annotate(
     image_id: Annotated[str, Field(description="ID of the image to annotate")],
     type: Annotated[
