@@ -1,0 +1,79 @@
+---
+description: Rules for authoring MCP tools in this screenshot server
+globs:
+  - "src/**/*.py"
+---
+
+# MCP Tool Authoring Rules
+
+## Return Types
+
+All MCP tool functions must return Pydantic `BaseModel` subclasses, never bare `dict[str, ...]`.
+
+**Good:**
+```python
+class DeleteResult(BaseModel):
+    message: str = Field(description="Status message")
+
+@mcp.tool()
+def delete_image(image_id: str) -> DeleteResult:
+    return DeleteResult(message="Deleted")
+```
+
+**Bad:**
+```python
+@mcp.tool()
+def delete_image(image_id: str) -> dict[str, str]:
+    return {"message": "Deleted"}
+```
+
+## Input Validation
+
+All numeric parameters with documented ranges must include Pydantic Field constraints:
+
+```python
+opacity: Annotated[int, Field(ge=0, le=255, description="Opacity (0-255)")] = 100
+font_size: Annotated[int, Field(gt=0, description="Font size")] = 24
+quality: Annotated[int, Field(ge=1, le=100, description="JPEG quality")] = 95
+```
+
+## Private Helpers
+
+Use existing private helpers instead of duplicating code:
+
+- `_get_font(size)` - Cross-platform font resolution
+- `_get_image(image_id)` - Retrieve image from store with error handling
+- `_store_image(image, image_id, save_history)` - Store image with undo history
+- `_parse_position(pos, ...)` - Parse named/percentage/pixel positions
+- `_auto_adjust_position(...)` - Keep annotations within bounds
+
+## Imports
+
+All imports must be at the top of the file. No inline imports inside functions except for platform-specific imports that may fail (e.g., `ImageGrab` on Linux without display).
+
+## Parameter Naming
+
+Do not shadow Python builtins. Use descriptive names:
+
+- `annotation_type` instead of `type`
+- `image_format` instead of `format`
+
+## Global State
+
+Global state is managed in the `storage` module. Use the provided functions instead of accessing globals directly:
+
+- `store_image(image, image_id, save_history)` - Store image with undo history
+- `get_image(image_id)` - Retrieve image from store
+- `get_next_callout_number()` - Get and increment callout counter
+- `reset_callout_counter()` - Reset callout counter to 0
+- `configure_limits(max_images, max_memory_mb, undo_levels)` - Configure memory limits
+- `get_limits()` - Get current limits
+- `get_total_memory_mb()` - Get current memory usage
+
+For direct access (e.g., in tests), import from `storage`:
+- `_image_store` - Image data storage
+- `_image_history` - Undo history per image
+- `_image_metadata` - Cached (width, height) per image
+- `_image_order` - LRU order tracking
+- `_image_counter` - Auto-increment for image IDs
+- `_callout_counter` - Auto-increment for callout numbers

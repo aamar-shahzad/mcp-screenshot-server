@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from PIL import Image as PILImage
 
-# Import the server module
-from mcp_screenshot_server import server
+# Import the server and storage modules
+from mcp_screenshot_server import server, storage
 
 
 class TestImageStorage:
@@ -17,8 +17,8 @@ class TestImageStorage:
 
     def test_generate_image_id(self):
         """Test that image IDs are unique."""
-        id1 = server._generate_image_id()
-        id2 = server._generate_image_id()
+        id1 = storage.generate_image_id()
+        id2 = storage.generate_image_id()
         assert id1 != id2
         assert id1.startswith("img_")
 
@@ -34,9 +34,6 @@ class TestImageStorage:
         # Retrieve it
         retrieved = server._get_image(image_id)
         assert retrieved.size == (100, 100)
-        
-        # Clean up
-        del server._image_store[image_id]
 
     def test_get_nonexistent_image(self):
         """Test that getting a nonexistent image raises an error."""
@@ -53,11 +50,6 @@ class TestAnnotationTools:
         img = PILImage.new("RGB", (200, 200), color="white")
         image_id = server._store_image(img)
         yield image_id
-        # Clean up
-        if image_id in server._image_store:
-            del server._image_store[image_id]
-        if image_id in server._image_history:
-            del server._image_history[image_id]
 
     def test_add_box(self, test_image):
         """Test adding a box annotation."""
@@ -119,11 +111,6 @@ class TestEditingTools:
         img = PILImage.new("RGB", (200, 200), color="white")
         image_id = server._store_image(img)
         yield image_id
-        # Clean up
-        if image_id in server._image_store:
-            del server._image_store[image_id]
-        if image_id in server._image_history:
-            del server._image_history[image_id]
 
     def test_crop_image(self, test_image):
         """Test cropping an image."""
@@ -182,11 +169,6 @@ class TestUndoFeature:
         img = PILImage.new("RGB", (200, 200), color="white")
         image_id = server._store_image(img, save_history=False)
         yield image_id
-        # Clean up
-        if image_id in server._image_store:
-            del server._image_store[image_id]
-        if image_id in server._image_history:
-            del server._image_history[image_id]
 
     def test_undo_after_annotation(self, test_image):
         """Test undo after adding annotation."""
@@ -199,7 +181,7 @@ class TestUndoFeature:
         
         # Check undo count
         count = server.get_undo_count(test_image)
-        assert count["undo_count"] >= 1
+        assert count.undo_count >= 1
         
         # Undo
         result = server.undo(test_image)
@@ -220,9 +202,6 @@ class TestSaveTools:
         img = PILImage.new("RGB", (100, 100), color="blue")
         image_id = server._store_image(img)
         yield image_id
-        # Clean up
-        if image_id in server._image_store:
-            del server._image_store[image_id]
 
     def test_save_image(self, test_image):
         """Test saving an image to disk."""
@@ -231,7 +210,7 @@ class TestSaveTools:
             result = server.save_image(
                 image_id=test_image,
                 path=save_path,
-                format="png"
+                image_format="png"
             )
             assert os.path.exists(result.path)
             assert "Image saved" in result.message
@@ -243,7 +222,7 @@ class TestSaveTools:
             result = server.save_image(
                 image_id=test_image,
                 path=save_path,
-                format="jpg",
+                image_format="jpg",
                 quality=90
             )
             assert os.path.exists(result.path)
@@ -260,31 +239,21 @@ class TestImageManagement:
         id1 = server._store_image(img1)
         id2 = server._store_image(img2)
         
-        try:
-            result = server.list_images()
-            assert result.count >= 2
-            ids = [img.image_id for img in result.images]
-            assert id1 in ids
-            assert id2 in ids
-        finally:
-            del server._image_store[id1]
-            del server._image_store[id2]
+        result = server.list_images()
+        assert result.count >= 2
+        ids = [img.image_id for img in result.images]
+        assert id1 in ids
+        assert id2 in ids
 
     def test_duplicate_image(self):
         """Test duplicating an image."""
         img = PILImage.new("RGB", (100, 100), color="green")
         original_id = server._store_image(img)
         
-        try:
-            result = server.duplicate_image(original_id)
-            assert result.image_id != original_id
-            assert result.width == 100
-            assert result.height == 100
-            
-            # Clean up duplicate
-            del server._image_store[result.image_id]
-        finally:
-            del server._image_store[original_id]
+        result = server.duplicate_image(original_id)
+        assert result.image_id != original_id
+        assert result.width == 100
+        assert result.height == 100
 
     def test_delete_image(self):
         """Test deleting an image."""
@@ -292,7 +261,7 @@ class TestImageManagement:
         image_id = server._store_image(img)
         
         result = server.delete_image(image_id)
-        assert "deleted successfully" in result["message"]
+        assert "deleted successfully" in result.message
         assert image_id not in server._image_store
 
 
@@ -305,17 +274,12 @@ class TestSmartAnnotation:
         img = PILImage.new("RGB", (400, 300), color="white")
         image_id = server._store_image(img)
         yield image_id
-        # Clean up
-        if image_id in server._image_store:
-            del server._image_store[image_id]
-        if image_id in server._image_history:
-            del server._image_history[image_id]
 
     def test_annotate_box_named_position(self, test_image):
         """Test annotate with named position."""
         result = server.annotate(
             image_id=test_image,
-            type="box",
+            annotation_type="box",
             position="top-left",
             width=100,
             height=50,
@@ -327,7 +291,7 @@ class TestSmartAnnotation:
         """Test annotate with percentage position."""
         result = server.annotate(
             image_id=test_image,
-            type="box",
+            annotation_type="box",
             position="50%, 50%",
             width=100,
             height=50,
@@ -339,7 +303,7 @@ class TestSmartAnnotation:
         """Test annotate text."""
         result = server.annotate(
             image_id=test_image,
-            type="text",
+            annotation_type="text",
             position="center",
             text="Hello World",
             color="green"
@@ -350,7 +314,7 @@ class TestSmartAnnotation:
         """Test annotate circle."""
         result = server.annotate(
             image_id=test_image,
-            type="circle",
+            annotation_type="circle",
             position="center",
             radius=50,
             color="purple"
@@ -361,7 +325,7 @@ class TestSmartAnnotation:
         """Test annotate arrow."""
         result = server.annotate(
             image_id=test_image,
-            type="arrow",
+            annotation_type="arrow",
             position="20%, 50%",
             end_position="80%, 50%",
             color="orange"
@@ -372,7 +336,7 @@ class TestSmartAnnotation:
         """Test annotate callout."""
         result = server.annotate(
             image_id=test_image,
-            type="callout",
+            annotation_type="callout",
             position="bottom-right",
             text="Important!",
             color="red"

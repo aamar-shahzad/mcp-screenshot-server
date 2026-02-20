@@ -1,19 +1,65 @@
 """MCP Screenshot Server - Main server implementation."""
 
-import base64
-import io
+import argparse
+import json
+import math
 import os
 import subprocess
 import sys
 import tempfile
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import FastMCP, Image
 from PIL import Image as PILImage
-from PIL import ImageDraw, ImageFont
+from PIL import ImageColor, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 from pydantic import BaseModel, Field
+
+from .models import (
+    AnnotationResult,
+    Base64Result,
+    ClipboardResult,
+    ComparisonResult,
+    ConfigureLimitsResult,
+    DeleteResult,
+    ImageInfo,
+    ImageListResult,
+    MemoryStatsResult,
+    PreviewResult,
+    SaveResult,
+    ScreenshotResult,
+    SessionExportResult,
+    SessionImportResult,
+    StepAnnotationResult,
+    UndoCountResult,
+)
+from .storage import (
+    _image_history,
+    _image_metadata,
+    _image_order,
+    _image_store,
+    evict_if_needed,
+    get_callout_counter,
+    get_font,
+    get_limits,
+    get_next_callout_number,
+    get_total_memory_mb,
+    image_to_base64,
+    remove_image_internal,
+    set_callout_counter,
+    store_image,
+)
+from .storage import (
+    configure_limits as storage_configure_limits,
+)
+from .storage import (
+    get_image as storage_get_image,
+)
+from .storage import (
+    reset_callout_counter as storage_reset_callout_counter,
+)
 
 # Initialize the MCP server
 mcp = FastMCP(
@@ -58,88 +104,12 @@ mcp = FastMCP(
     """,
 )
 
-# In-memory image storage for the session
-_image_store: dict[str, bytes] = {}
-_image_history: dict[str, list[bytes]] = {}  # Undo history per image
-_image_counter = 0
-_callout_counter = 0  # For auto-numbered callouts
 
-
-def _generate_image_id() -> str:
-    """Generate a unique image ID."""
-    global _image_counter
-    _image_counter += 1
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"img_{timestamp}_{_image_counter}"
-
-
-def _store_image(image: PILImage.Image, image_id: str | None = None, save_history: bool = True) -> str:
-    """Store an image and return its ID."""
-    if image_id is None:
-        image_id = _generate_image_id()
-        save_history = False  # Don't save history for new images
-
-    # Save to undo history before overwriting
-    if save_history and image_id in _image_store:
-        if image_id not in _image_history:
-            _image_history[image_id] = []
-        # Keep last 10 states for undo
-        _image_history[image_id].append(_image_store[image_id])
-        if len(_image_history[image_id]) > 10:
-            _image_history[image_id].pop(0)
-
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    _image_store[image_id] = buffer.getvalue()
-    return image_id
-
-
-def _get_image(image_id: str) -> PILImage.Image:
-    """Retrieve an image by ID."""
-    if image_id not in _image_store:
-        raise ValueError(f"Image '{image_id}' not found. Use list_images to see available images.")
-    return PILImage.open(io.BytesIO(_image_store[image_id]))
-
-
-def _image_to_base64(image_id: str) -> str:
-    """Convert stored image to base64."""
-    if image_id not in _image_store:
-        raise ValueError(f"Image '{image_id}' not found.")
-    return base64.b64encode(_image_store[image_id]).decode("utf-8")
-
-
-class ScreenshotResult(BaseModel):
-    """Result of a screenshot capture."""
-    image_id: str = Field(description="Unique identifier for the captured image")
-    width: int = Field(description="Image width in pixels")
-    height: int = Field(description="Image height in pixels")
-    message: str = Field(description="Status message")
-
-
-class AnnotationResult(BaseModel):
-    """Result of an annotation operation."""
-    image_id: str = Field(description="Image ID that was annotated")
-    message: str = Field(description="Status message")
-
-
-class SaveResult(BaseModel):
-    """Result of saving an image."""
-    path: str = Field(description="Full path where the image was saved")
-    message: str = Field(description="Status message")
-
-
-class ImageInfo(BaseModel):
-    """Information about a stored image."""
-    image_id: str
-    width: int
-    height: int
-    size_bytes: int
-
-
-class ImageListResult(BaseModel):
-    """List of available images."""
-    images: list[ImageInfo]
-    count: int
+# Aliases for backward compatibility with internal function names
+_store_image = store_image
+_get_image = storage_get_image
+_image_to_base64 = image_to_base64
+_get_font = get_font
 
 
 # =============================================================================
@@ -157,13 +127,16 @@ def capture_screenshot(
     y: Annotated[int | None, Field(description="Y coordinate for region capture")] = None,
     width: Annotated[int | None, Field(description="Width for region capture")] = None,
     height: Annotated[int | None, Field(description="Height for region capture")] = None,
-    window_name: Annotated[str | None, Field(description="Window name for window capture (macOS)")] = None,
+    window_id: Annotated[int | None, Field(description="Window ID for window capture (macOS). Use 'osascript' or 'GetWindowID' to find window IDs.")] = None,
 ) -> ScreenshotResult:
     """
     Capture a screenshot of the screen, a region, or a specific window.
 
     On macOS, this uses the native screencapture command.
     On other systems, it uses PIL's ImageGrab or pyautogui as fallback.
+
+    For window capture on macOS, you need the numeric window ID (not the window name).
+    You can find window IDs using: osascript -e 'tell app "System Events" to get id of windows of processes'
     """
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
         tmp_path = tmp.name
@@ -180,9 +153,9 @@ def capture_screenshot(
                 # Interactive region selection
                 cmd.append("-i")
             elif mode == "window":
-                if window_name:
-                    # Try to capture specific window by name
-                    cmd.extend(["-l", window_name])
+                if window_id is not None:
+                    # Capture specific window by ID (screencapture -l requires integer window ID)
+                    cmd.extend(["-l", str(window_id)])
                 else:
                     # Interactive window selection
                     cmd.append("-w")
@@ -207,7 +180,7 @@ def capture_screenshot(
 
                 screenshot.save(tmp_path, "PNG")
             except Exception as e:
-                raise RuntimeError(f"Screenshot capture failed: {e}")
+                raise RuntimeError(f"Screenshot capture failed: {e}") from e
 
         # Load and store the image
         image = PILImage.open(tmp_path)
@@ -260,7 +233,7 @@ def add_box(
     width: Annotated[int, Field(description="Width of the box")],
     height: Annotated[int, Field(description="Height of the box")],
     color: Annotated[str, Field(description="Color of the box (e.g., 'red', '#FF0000')")] = "red",
-    line_width: Annotated[int, Field(description="Width of the box outline")] = 3,
+    line_width: Annotated[int, Field(gt=0, description="Width of the box outline")] = 3,
     fill: Annotated[str | None, Field(description="Fill color (None for no fill)")] = None,
 ) -> AnnotationResult:
     """Draw a rectangle/box on the image."""
@@ -299,7 +272,7 @@ def add_line(
     x2: Annotated[int, Field(description="X coordinate of the end point")],
     y2: Annotated[int, Field(description="Y coordinate of the end point")],
     color: Annotated[str, Field(description="Color of the line")] = "red",
-    line_width: Annotated[int, Field(description="Width of the line")] = 3,
+    line_width: Annotated[int, Field(gt=0, description="Width of the line")] = 3,
 ) -> AnnotationResult:
     """Draw a line on the image."""
     image = _get_image(image_id)
@@ -323,12 +296,10 @@ def add_arrow(
     x2: Annotated[int, Field(description="X coordinate of the arrow end (tip)")],
     y2: Annotated[int, Field(description="Y coordinate of the arrow end (tip)")],
     color: Annotated[str, Field(description="Color of the arrow")] = "red",
-    line_width: Annotated[int, Field(description="Width of the arrow line")] = 3,
+    line_width: Annotated[int, Field(gt=0, description="Width of the arrow line")] = 3,
     head_size: Annotated[int, Field(description="Size of the arrow head")] = 15,
 ) -> AnnotationResult:
     """Draw an arrow on the image."""
-    import math
-
     image = _get_image(image_id)
     draw = ImageDraw.Draw(image)
 
@@ -367,31 +338,14 @@ def add_text(
     y: Annotated[int, Field(description="Y coordinate for the text")],
     text: Annotated[str, Field(description="The text to add")],
     color: Annotated[str, Field(description="Color of the text")] = "red",
-    font_size: Annotated[int, Field(description="Size of the font")] = 24,
+    font_size: Annotated[int, Field(gt=0, description="Size of the font")] = 24,
     background: Annotated[str | None, Field(description="Background color for the text")] = None,
 ) -> AnnotationResult:
     """Add text annotation to the image."""
     image = _get_image(image_id)
     draw = ImageDraw.Draw(image)
 
-    # Try to get a font, fall back to default
-    font = None
-    try:
-        # Try common system fonts
-        font_paths = [
-            "/System/Library/Fonts/Helvetica.ttc",  # macOS
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # Linux
-            "C:\\Windows\\Fonts\\arial.ttf",  # Windows
-        ]
-        for font_path in font_paths:
-            if os.path.exists(font_path):
-                font = ImageFont.truetype(font_path, font_size)
-                break
-    except Exception:
-        pass
-
-    if font is None:
-        font = ImageFont.load_default()
+    font = _get_font(font_size)
 
     # Draw background if specified
     if background:
@@ -419,7 +373,7 @@ def add_circle(
     y: Annotated[int, Field(description="Y coordinate of the center")],
     radius: Annotated[int, Field(description="Radius of the circle")],
     color: Annotated[str, Field(description="Color of the circle")] = "red",
-    line_width: Annotated[int, Field(description="Width of the circle outline")] = 3,
+    line_width: Annotated[int, Field(gt=0, description="Width of the circle outline")] = 3,
     fill: Annotated[str | None, Field(description="Fill color (None for no fill)")] = None,
 ) -> AnnotationResult:
     """Draw a circle on the image."""
@@ -447,7 +401,7 @@ def add_highlight(
     width: Annotated[int, Field(description="Width of the highlight area")],
     height: Annotated[int, Field(description="Height of the highlight area")],
     color: Annotated[str, Field(description="Color of the highlight")] = "yellow",
-    opacity: Annotated[int, Field(description="Opacity (0-255)")] = 100,
+    opacity: Annotated[int, Field(ge=0, le=255, description="Opacity (0-255)")] = 100,
 ) -> AnnotationResult:
     """Add a semi-transparent highlight region to the image."""
     image = _get_image(image_id).convert("RGBA")
@@ -457,7 +411,6 @@ def add_highlight(
     draw = ImageDraw.Draw(overlay)
 
     # Parse color and add opacity
-    from PIL import ImageColor
     try:
         rgb = ImageColor.getrgb(color)
         rgba = (*rgb, opacity)
@@ -636,7 +589,7 @@ class AnnotationSpec(BaseModel):
 @mcp.tool()
 def precise_annotate(
     image_id: Annotated[str, Field(description="ID of the image to annotate")],
-    type: Annotated[
+    annotation_type: Annotated[
         Literal["box", "circle", "text", "arrow", "line"],
         Field(description="Type of annotation")
     ],
@@ -649,8 +602,8 @@ def precise_annotate(
     x2: Annotated[int | None, Field(description="End X coordinate (for arrow/line)")] = None,
     y2: Annotated[int | None, Field(description="End Y coordinate (for arrow/line)")] = None,
     color: Annotated[str, Field(description="Color (name or hex)")] = "red",
-    line_width: Annotated[int, Field(description="Line/border width")] = 3,
-    font_size: Annotated[int, Field(description="Font size for text")] = 24,
+    line_width: Annotated[int, Field(gt=0, description="Line/border width")] = 3,
+    font_size: Annotated[int, Field(gt=0, description="Font size for text")] = 24,
 ) -> AnnotationResult:
     """
     Pixel-perfect annotation tool. Places annotations at EXACT pixel coordinates.
@@ -670,36 +623,32 @@ def precise_annotate(
     draw = ImageDraw.Draw(image, "RGBA")
     message = ""
 
-    if type == "box":
+    if annotation_type == "box":
         draw.rectangle([x, y, x + width, y + height], outline=color, width=line_width)
         message = f"Box at ({x}, {y}) size {width}x{height}"
 
-    elif type == "circle":
-        bbox = [x - radius, y - radius, x + radius, y + radius]
-        draw.ellipse(bbox, outline=color, width=line_width)
+    elif annotation_type == "circle":
+        circle_bbox = [x - radius, y - radius, x + radius, y + radius]
+        draw.ellipse(circle_bbox, outline=color, width=line_width)
         message = f"Circle at ({x}, {y}) radius {radius}"
 
-    elif type == "text":
+    elif annotation_type == "text":
         if not text:
             raise ValueError("text parameter required for text type")
-        try:
-            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
-        except (OSError, IOError):
-            font = ImageFont.load_default()
+        font = _get_font(font_size)
         # Add background for readability
-        bbox = draw.textbbox((x, y), text, font=font)
+        text_bbox = draw.textbbox((x, y), text, font=font)
         padding = 4
         draw.rectangle(
-            [bbox[0] - padding, bbox[1] - padding, bbox[2] + padding, bbox[3] + padding],
+            [text_bbox[0] - padding, text_bbox[1] - padding, text_bbox[2] + padding, text_bbox[3] + padding],
             fill="white"
         )
         draw.text((x, y), text, fill=color, font=font)
         message = f"Text '{text}' at ({x}, {y})"
 
-    elif type == "arrow":
+    elif annotation_type == "arrow":
         if x2 is None or y2 is None:
             raise ValueError("x2 and y2 required for arrow type")
-        import math
         draw.line([(x, y), (x2, y2)], fill=color, width=line_width)
         # Draw arrowhead
         angle = math.atan2(y2 - y, x2 - x)
@@ -713,7 +662,7 @@ def precise_annotate(
         draw.polygon([(x2, y2), (left_x, left_y), (right_x, right_y)], fill=color)
         message = f"Arrow from ({x}, {y}) to ({x2}, {y2})"
 
-    elif type == "line":
+    elif annotation_type == "line":
         if x2 is None or y2 is None:
             raise ValueError("x2 and y2 required for line type")
         draw.line([(x, y), (x2, y2)], fill=color, width=line_width)
@@ -726,7 +675,7 @@ def precise_annotate(
 @mcp.tool()
 def annotate(
     image_id: Annotated[str, Field(description="ID of the image to annotate")],
-    type: Annotated[
+    annotation_type: Annotated[
         Literal["box", "circle", "arrow", "text", "highlight", "line", "callout"],
         Field(description="Type of annotation")
     ],
@@ -740,8 +689,8 @@ def annotate(
     radius: Annotated[int | None, Field(description="Radius for circles")] = None,
     end_position: Annotated[str | None, Field(description="End position for arrows/lines")] = None,
     color: Annotated[str, Field(description="Color")] = "red",
-    line_width: Annotated[int, Field(description="Line width")] = 3,
-    font_size: Annotated[int, Field(description="Font size for text")] = 24,
+    line_width: Annotated[int, Field(gt=0, description="Line width")] = 3,
+    font_size: Annotated[int, Field(gt=0, description="Font size for text")] = 24,
     anchor: Annotated[
         str,
         Field(description="Anchor point: which part of element aligns to position (top-left, center, bottom-right, etc.)")
@@ -791,49 +740,34 @@ def annotate(
 
     # Auto-adjust if enabled
     if auto_adjust:
-        if type in ["box", "highlight"]:
+        if annotation_type in ["box", "highlight"]:
             x, y = _auto_adjust_position(x, y, w, h, img_w, img_h)
-        elif type == "circle":
+        elif annotation_type == "circle":
             x, y = _auto_adjust_position(x - r, y - r, r * 2, r * 2, img_w, img_h)
             x, y = x + r, y + r  # Convert back to center
 
     draw = ImageDraw.Draw(image, "RGBA")
     message = ""
 
-    if type == "box":
+    if annotation_type == "box":
         draw.rectangle([x, y, x + w, y + h], outline=color, width=line_width)
         message = f"Box at ({x},{y}) size {w}x{h}"
 
-    elif type == "circle":
-        bbox = [x - r, y - r, x + r, y + r]
-        draw.ellipse(bbox, outline=color, width=line_width)
+    elif annotation_type == "circle":
+        circle_bbox = [x - r, y - r, x + r, y + r]
+        draw.ellipse(circle_bbox, outline=color, width=line_width)
         message = f"Circle at ({x},{y}) radius {r}"
 
-    elif type == "text":
+    elif annotation_type == "text":
         if not text:
             text = "Label"
         # Get font
-        font = None
-        try:
-            font_paths = [
-                "/System/Library/Fonts/Helvetica.ttc",
-                "/System/Library/Fonts/SFNSText.ttf",
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                "C:\\Windows\\Fonts\\arial.ttf",
-            ]
-            for font_path in font_paths:
-                if os.path.exists(font_path):
-                    font = ImageFont.truetype(font_path, font_size)
-                    break
-        except (OSError, IOError):
-            pass
-        if font is None:
-            font = ImageFont.load_default()
+        font = _get_font(font_size)
 
         # Add background for readability
-        bbox = draw.textbbox((x, y), text, font=font)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
+        text_bbox = draw.textbbox((x, y), text, font=font)
+        text_w = int(text_bbox[2] - text_bbox[0])
+        text_h = int(text_bbox[3] - text_bbox[1])
 
         if auto_adjust:
             x, y = _auto_adjust_position(x, y, text_w + 10, text_h + 6, img_w, img_h)
@@ -843,11 +777,10 @@ def annotate(
         draw.text((x, y), text, fill=color, font=font)
         message = f"Text '{text}' at ({x},{y})"
 
-    elif type == "callout":
+    elif annotation_type == "callout":
         # Use numbered callout
-        global _callout_counter
-        _callout_counter += 1
-        num = str(_callout_counter)
+        callout_num = get_next_callout_number()
+        num = str(callout_num)
         callout_r = max(15, font_size // 2 + 5)
 
         # Draw circle background
@@ -857,29 +790,19 @@ def annotate(
         )
 
         # Draw number
-        font = None
-        try:
-            font_paths = ["/System/Library/Fonts/Helvetica.ttc", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
-            for font_path in font_paths:
-                if os.path.exists(font_path):
-                    font = ImageFont.truetype(font_path, font_size)
-                    break
-        except (OSError, IOError):
-            pass
-        if font is None:
-            font = ImageFont.load_default()
+        font = _get_font(font_size)
 
-        bbox = draw.textbbox((0, 0), num, font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        num_bbox = draw.textbbox((0, 0), num, font=font)
+        tw, th = num_bbox[2] - num_bbox[0], num_bbox[3] - num_bbox[1]
         draw.text((x - tw // 2, y - th // 2 - 2), num, fill="white", font=font)
 
         # Add label if provided
         if text:
             draw.text((x + callout_r + 5, y - th // 2), text, fill=color, font=font)
 
-        message = f"Callout #{_callout_counter} at ({x},{y})" + (f" '{text}'" if text else "")
+        message = f"Callout #{callout_num} at ({x},{y})" + (f" '{text}'" if text else "")
 
-    elif type in ["arrow", "line"]:
+    elif annotation_type in ["arrow", "line"]:
         if not end_position:
             # Default: draw toward center
             ex, ey = img_w // 2, img_h // 2
@@ -888,9 +811,8 @@ def annotate(
 
         draw.line([(x, y), (ex, ey)], fill=color, width=line_width)
 
-        if type == "arrow":
+        if annotation_type == "arrow":
             # Draw arrowhead
-            import math
             angle = math.atan2(ey - y, ex - x)
             head_size = line_width * 5
 
@@ -904,8 +826,7 @@ def annotate(
         else:
             message = f"Line from ({x},{y}) to ({ex},{ey})"
 
-    elif type == "highlight":
-        from PIL import ImageColor
+    elif annotation_type == "highlight":
         try:
             rgb = ImageColor.getrgb(color)
             rgba = (*rgb, 100)
@@ -951,12 +872,10 @@ def batch_annotate(
         {"type": "callout", "position": "bottom-right", "text": "Click here"}
     ]
     """
-    import json
-
     try:
         specs = json.loads(annotations)
     except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON: {e}")
+        raise ValueError(f"Invalid JSON: {e}") from e
 
     if not isinstance(specs, list):
         raise ValueError("annotations must be a JSON array")
@@ -972,7 +891,7 @@ def batch_annotate(
 
         result = annotate(
             image_id=image_id,
-            type=ann_type,
+            annotation_type=ann_type,
             position=spec.get("position", "center"),
             text=spec.get("text"),
             width=spec.get("width"),
@@ -1024,26 +943,23 @@ def label_regions(
         "Footer": "bottom-center"
     }
     """
-    import json
-
     try:
         region_map = json.loads(regions)
     except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON: {e}")
+        raise ValueError(f"Invalid JSON: {e}") from e
 
     if not isinstance(region_map, dict):
         raise ValueError("regions must be a JSON object")
 
     # Reset callout counter for consistent numbering
-    global _callout_counter
-    _callout_counter = 0
+    storage_reset_callout_counter()
 
     messages = []
     for name, position in region_map.items():
         # Apply annotation (result is used implicitly - modifies image in store)
         annotate(
             image_id=image_id,
-            type=style,
+            annotation_type=style,
             position=position,
             text=name,
             color=color,
@@ -1053,6 +969,131 @@ def label_regions(
     return AnnotationResult(
         image_id=image_id,
         message=f"Labeled {len(region_map)} regions: " + ", ".join(messages)
+    )
+
+
+# =============================================================================
+# Composite Annotation Tools
+# =============================================================================
+
+
+@mcp.tool()
+def annotate_step(
+    image_id: Annotated[str, Field(description="ID of the image to annotate")],
+    step_number: Annotated[int | None, Field(description="Step number (auto-increments if None)", ge=1)] = None,
+    target_position: Annotated[
+        str,
+        Field(description="Position the arrow points to. Named ('center'), percentage ('50%, 30%'), or pixels ('830px, 195px')")
+    ] = "center",
+    callout_position: Annotated[
+        str | None,
+        Field(description="Position for the callout. If None, auto-placed near target. Named, percentage, or pixels.")
+    ] = None,
+    text: Annotated[str | None, Field(description="Optional text label to display near the callout")] = None,
+    color: Annotated[str, Field(description="Color for callout and arrow")] = "red",
+    callout_size: Annotated[int, Field(description="Size of the callout circle", ge=20, le=100)] = 40,
+    arrow_width: Annotated[int, Field(description="Width of the arrow line", ge=1, le=20)] = 3,
+) -> StepAnnotationResult:
+    """
+    Add a numbered step annotation with callout circle, arrow, and optional text.
+
+    This is a composite tool that combines a numbered callout with an arrow pointing
+    to a target location. Useful for creating step-by-step tutorials or highlighting
+    UI elements.
+
+    If callout_position is not specified, it's automatically placed offset from the target.
+    """
+    if step_number is None:
+        step_number = get_next_callout_number()
+
+    image = _get_image(image_id)
+    draw = ImageDraw.Draw(image)
+    img_width, img_height = image.size
+
+    # Parse target position
+    target_x, target_y = _parse_position(target_position, img_width, img_height)
+
+    # Auto-calculate callout position if not specified
+    if callout_position is None:
+        # Place callout offset from target, preferring top-left quadrant
+        offset = callout_size + 50
+        callout_x = target_x - offset if target_x > img_width // 2 else target_x + offset
+        callout_y = target_y - offset if target_y > img_height // 2 else target_y + offset
+        # Clamp to image bounds
+        callout_x = max(callout_size, min(img_width - callout_size, callout_x))
+        callout_y = max(callout_size, min(img_height - callout_size, callout_y))
+    else:
+        callout_x, callout_y = _parse_position(callout_position, img_width, img_height)
+
+    # Draw arrow from callout to target
+    angle = math.atan2(target_y - callout_y, target_x - callout_x)
+    arrow_start_x = int(callout_x + (callout_size // 2 + 5) * math.cos(angle))
+    arrow_start_y = int(callout_y + (callout_size // 2 + 5) * math.sin(angle))
+
+    # Draw arrow line
+    draw.line([(arrow_start_x, arrow_start_y), (target_x, target_y)], fill=color, width=arrow_width)
+
+    # Draw arrow head
+    head_size = 12
+    angle1 = angle + math.pi * 0.8
+    angle2 = angle - math.pi * 0.8
+    head_x1 = target_x + head_size * math.cos(angle1)
+    head_y1 = target_y + head_size * math.sin(angle1)
+    head_x2 = target_x + head_size * math.cos(angle2)
+    head_y2 = target_y + head_size * math.sin(angle2)
+    draw.polygon([(target_x, target_y), (head_x1, head_y1), (head_x2, head_y2)], fill=color)
+
+    # Draw callout circle
+    radius = callout_size // 2
+    draw.ellipse(
+        [callout_x - radius, callout_y - radius, callout_x + radius, callout_y + radius],
+        fill=color,
+        outline=color
+    )
+
+    # Draw step number
+    font_size = int(callout_size * 0.6)
+    font = _get_font(font_size)
+    number_text = str(step_number)
+    text_bbox = draw.textbbox((0, 0), number_text, font=font)
+    text_w = int(text_bbox[2] - text_bbox[0])
+    text_h = int(text_bbox[3] - text_bbox[1])
+    draw.text(
+        (callout_x - text_w // 2, callout_y - text_h // 2 - 2),
+        number_text,
+        fill="white",
+        font=font
+    )
+
+    # Draw optional text label
+    if text:
+        label_font = _get_font(16)
+        label_bbox = draw.textbbox((0, 0), text, font=label_font)
+        label_w = int(label_bbox[2] - label_bbox[0])
+        label_h = int(label_bbox[3] - label_bbox[1])
+
+        # Position label below callout
+        label_x = callout_x - label_w // 2
+        label_y = callout_y + radius + 8
+
+        # Draw background for readability
+        padding = 4
+        draw.rectangle(
+            [label_x - padding, label_y - padding, label_x + label_w + padding, label_y + label_h + padding],
+            fill="white",
+            outline=color
+        )
+        draw.text((label_x, label_y), text, fill=color, font=label_font)
+
+    _store_image(image, image_id)
+
+    return StepAnnotationResult(
+        image_id=image_id,
+        step_number=step_number,
+        callout_position=(callout_x, callout_y),
+        target_position=(target_x, target_y),
+        message=f"Step {step_number} annotation added pointing to ({target_x}, {target_y})"
+        + (f" with label '{text}'" if text else "")
     )
 
 
@@ -1068,7 +1109,7 @@ def blur_region(
     y: Annotated[int, Field(description="Y coordinate of the top-left corner")],
     width: Annotated[int, Field(description="Width of the region to blur")],
     height: Annotated[int, Field(description="Height of the region to blur")],
-    blur_strength: Annotated[int, Field(description="Blur strength (1-50, higher = more blur)")] = 20,
+    blur_strength: Annotated[int, Field(ge=1, le=50, description="Blur strength (1-50, higher = more blur)")] = 20,
     pixelate: Annotated[bool, Field(description="Use pixelation instead of blur")] = False,
 ) -> AnnotationResult:
     """
@@ -1076,8 +1117,6 @@ def blur_region(
 
     Use this for hiding passwords, email addresses, personal info, etc.
     """
-    from PIL import ImageFilter
-
     image = _get_image(image_id)
 
     # Crop the region
@@ -1186,11 +1225,8 @@ def add_numbered_callout(
 
     Numbers auto-increment if not specified, making it easy to add sequential callouts.
     """
-    global _callout_counter
-
     if number is None:
-        _callout_counter += 1
-        number = _callout_counter
+        number = get_next_callout_number()
 
     image = _get_image(image_id)
     draw = ImageDraw.Draw(image)
@@ -1204,23 +1240,8 @@ def add_numbered_callout(
     )
 
     # Draw number
-    font = None
-    font_size = int(size * 0.6)
-    try:
-        font_paths = [
-            "/System/Library/Fonts/Helvetica.ttc",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "C:\\Windows\\Fonts\\arialbd.ttf",
-        ]
-        for font_path in font_paths:
-            if os.path.exists(font_path):
-                font = ImageFont.truetype(font_path, font_size)
-                break
-    except Exception:
-        pass
-
-    if font is None:
-        font = ImageFont.load_default()
+    callout_font_size = int(size * 0.6)
+    font = _get_font(callout_font_size)
 
     text = str(number)
     bbox = draw.textbbox((0, 0), text, font=font)
@@ -1241,11 +1262,10 @@ def add_numbered_callout(
 
 
 @mcp.tool()
-def reset_callout_counter() -> dict[str, str]:
+def reset_callout_counter() -> DeleteResult:
     """Reset the auto-increment callout counter to 0."""
-    global _callout_counter
-    _callout_counter = 0
-    return {"message": "Callout counter reset to 0"}
+    storage_reset_callout_counter()
+    return DeleteResult(message="Callout counter reset to 0")
 
 
 @mcp.tool()
@@ -1255,12 +1275,9 @@ def add_border(
     color: Annotated[str, Field(description="Border color")] = "#000000",
 ) -> ScreenshotResult:
     """Add a border around the entire image."""
-    from PIL import ImageOps
-
     image = _get_image(image_id)
 
     # Parse color
-    from PIL import ImageColor
     try:
         border_color = ImageColor.getrgb(color)
     except ValueError:
@@ -1298,10 +1315,10 @@ def undo(
 @mcp.tool()
 def get_undo_count(
     image_id: Annotated[str, Field(description="ID of the image")]
-) -> dict[str, int]:
+) -> UndoCountResult:
     """Get the number of available undo operations for an image."""
     count = len(_image_history.get(image_id, []))
-    return {"image_id": image_id, "undo_count": count}
+    return UndoCountResult(image_id=image_id, undo_count=count)
 
 
 @mcp.tool()
@@ -1320,31 +1337,14 @@ def quick_save(
     """
     image = _get_image(image_id)
 
-    # Determine the save directory
+    # Determine the save directory (same paths work on macOS, Windows, and Linux)
     home = Path.home()
-
-    if sys.platform == "darwin":
-        locations = {
-            "desktop": home / "Desktop",
-            "downloads": home / "Downloads",
-            "documents": home / "Documents",
-            "temp": Path(tempfile.gettempdir()),
-        }
-    elif sys.platform == "win32":
-        locations = {
-            "desktop": home / "Desktop",
-            "downloads": home / "Downloads",
-            "documents": home / "Documents",
-            "temp": Path(tempfile.gettempdir()),
-        }
-    else:
-        # Linux
-        locations = {
-            "desktop": home / "Desktop",
-            "downloads": home / "Downloads",
-            "documents": home / "Documents",
-            "temp": Path(tempfile.gettempdir()),
-        }
+    locations = {
+        "desktop": home / "Desktop",
+        "downloads": home / "Downloads",
+        "documents": home / "Documents",
+        "temp": Path(tempfile.gettempdir()),
+    }
 
     save_dir = locations.get(location, locations["desktop"])
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -1431,13 +1431,11 @@ def add_watermark(
         Literal["bottom-right", "bottom-left", "top-right", "top-left", "center"],
         Field(description="Position of the watermark")
     ] = "bottom-right",
-    opacity: Annotated[int, Field(description="Opacity (0-255)")] = 128,
-    font_size: Annotated[int, Field(description="Font size")] = 24,
+    opacity: Annotated[int, Field(ge=0, le=255, description="Opacity (0-255)")] = 128,
+    font_size: Annotated[int, Field(gt=0, description="Font size")] = 24,
     color: Annotated[str, Field(description="Text color")] = "#ffffff",
 ) -> AnnotationResult:
     """Add a text watermark to the image."""
-    from PIL import ImageColor
-
     image = _get_image(image_id).convert("RGBA")
 
     # Create watermark layer
@@ -1445,22 +1443,7 @@ def add_watermark(
     draw = ImageDraw.Draw(watermark)
 
     # Get font
-    font = None
-    try:
-        font_paths = [
-            "/System/Library/Fonts/Helvetica.ttc",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "C:\\Windows\\Fonts\\arial.ttf",
-        ]
-        for font_path in font_paths:
-            if os.path.exists(font_path):
-                font = ImageFont.truetype(font_path, font_size)
-                break
-    except Exception:
-        pass
-
-    if font is None:
-        font = ImageFont.load_default()
+    font = _get_font(font_size)
 
     # Calculate text size
     bbox = draw.textbbox((0, 0), text, font=font)
@@ -1512,8 +1495,6 @@ def adjust_brightness(
     factor: Annotated[float, Field(description="Brightness factor (0.5=darker, 1.0=unchanged, 1.5=brighter)")] = 1.0,
 ) -> AnnotationResult:
     """Adjust image brightness."""
-    from PIL import ImageEnhance
-
     image = _get_image(image_id)
     enhancer = ImageEnhance.Brightness(image)
     adjusted = enhancer.enhance(factor)
@@ -1532,8 +1513,6 @@ def adjust_contrast(
     factor: Annotated[float, Field(description="Contrast factor (0.5=less, 1.0=unchanged, 1.5=more)")] = 1.0,
 ) -> AnnotationResult:
     """Adjust image contrast."""
-    from PIL import ImageEnhance
-
     image = _get_image(image_id)
     enhancer = ImageEnhance.Contrast(image)
     adjusted = enhancer.enhance(factor)
@@ -1547,6 +1526,153 @@ def adjust_contrast(
 
 
 # =============================================================================
+# Image Comparison Tools
+# =============================================================================
+
+
+@mcp.tool()
+def compare_images(
+    image_id_1: Annotated[str, Field(description="ID of the first image")],
+    image_id_2: Annotated[str, Field(description="ID of the second image")],
+    highlight_differences: Annotated[bool, Field(description="Create a diff image highlighting differences")] = True,
+    threshold: Annotated[int, Field(ge=0, le=255, description="Color difference threshold (0-255). Pixels differing by more than this are marked.")] = 10,
+    diff_color: Annotated[str, Field(description="Color to highlight differences")] = "red",
+) -> ComparisonResult:
+    """
+    Compare two images and optionally create a diff image highlighting differences.
+
+    Returns the percentage of pixels that differ and creates a new image showing
+    the differences if highlight_differences is True.
+
+    Useful for comparing before/after screenshots, detecting UI changes, or
+    validating visual regression tests.
+    """
+    img1 = _get_image(image_id_1)
+    img2 = _get_image(image_id_2)
+
+    # Ensure same size for comparison
+    if img1.size != img2.size:
+        raise ValueError(
+            f"Images must be the same size. Image 1: {img1.size}, Image 2: {img2.size}. "
+            "Use resize_image to match dimensions first."
+        )
+
+    # Convert to RGB for comparison
+    img1_rgb = img1.convert("RGB")
+    img2_rgb = img2.convert("RGB")
+
+    width, height = img1.size
+    total_pixels = width * height
+    diff_pixels = 0
+
+    # Create diff image if requested
+    diff_img: PILImage.Image | None = None
+    diff_draw: ImageDraw.ImageDraw | None = None
+    diff_color_rgb: tuple[int, ...] | None = None
+    if highlight_differences:
+        diff_img = img1_rgb.copy()
+        diff_draw = ImageDraw.Draw(diff_img)
+        diff_color_rgb = ImageColor.getrgb(diff_color)
+
+    # Compare pixels
+    for y in range(height):
+        for x in range(width):
+            # For RGB images, getpixel returns (R, G, B) tuples
+            # Use type: ignore since PIL's type hints are overly broad for converted RGB images
+            p1: tuple[int, int, int] = img1_rgb.getpixel((x, y))  # type: ignore[assignment]
+            p2: tuple[int, int, int] = img2_rgb.getpixel((x, y))  # type: ignore[assignment]
+            # Calculate color difference
+            color_diff = abs(p1[0] - p2[0]) + abs(p1[1] - p2[1]) + abs(p1[2] - p2[2])
+            if color_diff > threshold * 3:  # threshold per channel
+                diff_pixels += 1
+                if diff_draw is not None and diff_color_rgb is not None:
+                    diff_draw.point((x, y), fill=diff_color_rgb)
+
+    diff_percentage = round((diff_pixels / total_pixels) * 100, 2)
+    identical = diff_pixels == 0
+
+    if highlight_differences and diff_img is not None:
+        diff_id = _store_image(diff_img)
+        message = f"Comparison complete. {diff_percentage}% of pixels differ."
+        if not identical:
+            message += f" Diff image saved as '{diff_id}'."
+    else:
+        diff_id = image_id_1  # Return first image ID if no diff created
+        message = f"Comparison complete. {diff_percentage}% of pixels differ."
+
+    return ComparisonResult(
+        image_id=diff_id,
+        difference_percentage=diff_percentage,
+        identical=identical,
+        message=message,
+    )
+
+
+@mcp.tool()
+def create_side_by_side(
+    image_id_1: Annotated[str, Field(description="ID of the first (left) image")],
+    image_id_2: Annotated[str, Field(description="ID of the second (right) image")],
+    label_1: Annotated[str, Field(description="Label for the first image")] = "Before",
+    label_2: Annotated[str, Field(description="Label for the second image")] = "After",
+    gap: Annotated[int, Field(ge=0, le=100, description="Gap between images in pixels")] = 20,
+    label_height: Annotated[int, Field(ge=0, le=100, description="Height of label area (0 to disable labels)")] = 40,
+    background_color: Annotated[str, Field(description="Background color for gap and labels")] = "#f0f0f0",
+) -> ScreenshotResult:
+    """
+    Create a side-by-side comparison image from two images.
+
+    Useful for visual comparisons, before/after documentation, or A/B testing screenshots.
+    Labels are added above each image if label_height > 0.
+    """
+    img1 = _get_image(image_id_1)
+    img2 = _get_image(image_id_2)
+
+    # Calculate dimensions
+    max_height = max(img1.height, img2.height)
+    total_width = img1.width + gap + img2.width
+    total_height = max_height + label_height
+
+    # Create combined image
+    bg_color = ImageColor.getrgb(background_color)
+    combined = PILImage.new("RGB", (total_width, total_height), bg_color)
+
+    # Paste images (vertically centered if different heights)
+    y1_offset = label_height + (max_height - img1.height) // 2
+    y2_offset = label_height + (max_height - img2.height) // 2
+
+    combined.paste(img1, (0, y1_offset))
+    combined.paste(img2, (img1.width + gap, y2_offset))
+
+    # Add labels if enabled
+    if label_height > 0:
+        draw = ImageDraw.Draw(combined)
+        font = _get_font(min(24, label_height - 8))
+
+        # Label 1
+        bbox1 = draw.textbbox((0, 0), label_1, font=font)
+        text_w1 = bbox1[2] - bbox1[0]
+        text_x1 = (img1.width - text_w1) // 2
+        text_y1 = (label_height - (bbox1[3] - bbox1[1])) // 2
+        draw.text((text_x1, text_y1), label_1, fill="black", font=font)
+
+        # Label 2
+        bbox2 = draw.textbbox((0, 0), label_2, font=font)
+        text_w2 = bbox2[2] - bbox2[0]
+        text_x2 = img1.width + gap + (img2.width - text_w2) // 2
+        text_y2 = (label_height - (bbox2[3] - bbox2[1])) // 2
+        draw.text((text_x2, text_y2), label_2, fill="black", font=font)
+
+    result_id = _store_image(combined)
+
+    return ScreenshotResult(
+        image_id=result_id,
+        width=total_width,
+        height=total_height,
+        message=f"Side-by-side comparison created: '{label_1}' ({img1.width}x{img1.height}) | '{label_2}' ({img2.width}x{img2.height})",
+    )
+
+
+# =============================================================================
 # Image Management Tools
 # =============================================================================
 
@@ -1556,15 +1682,48 @@ def list_images() -> ImageListResult:
     """List all images stored in the current session."""
     images = []
     for image_id, data in _image_store.items():
-        img = PILImage.open(io.BytesIO(data))
+        width, height = _image_metadata.get(image_id, (0, 0))
         images.append(ImageInfo(
             image_id=image_id,
-            width=img.width,
-            height=img.height,
+            width=width,
+            height=height,
             size_bytes=len(data)
         ))
 
     return ImageListResult(images=images, count=len(images))
+
+
+@mcp.tool()
+def get_memory_stats() -> MemoryStatsResult:
+    """Get current memory usage statistics for the image store."""
+    max_images, max_memory_mb, undo_levels = get_limits()
+    return MemoryStatsResult(
+        image_count=len(_image_store),
+        max_images=max_images,
+        memory_mb=round(get_total_memory_mb(), 2),
+        max_memory_mb=max_memory_mb,
+        undo_levels=undo_levels,
+    )
+
+
+@mcp.tool()
+def configure_limits(
+    max_images: Annotated[int | None, Field(description="Maximum number of images to keep (default: 50)", ge=1)] = None,
+    max_memory_mb: Annotated[int | None, Field(description="Maximum memory in MB (default: 500)", ge=10)] = None,
+    undo_levels: Annotated[int | None, Field(description="Maximum undo history per image (default: 10)", ge=1, le=100)] = None,
+) -> ConfigureLimitsResult:
+    """Configure memory limits for the image store. Triggers eviction if new limits are lower."""
+    new_max_images, new_max_memory_mb, new_undo_levels, evicted = storage_configure_limits(
+        max_images, max_memory_mb, undo_levels
+    )
+
+    return ConfigureLimitsResult(
+        max_images=new_max_images,
+        max_memory_mb=new_max_memory_mb,
+        undo_levels=new_undo_levels,
+        evicted_count=len(evicted),
+        message=f"Limits updated. Evicted {len(evicted)} images." if evicted else "Limits updated.",
+    )
 
 
 @mcp.tool()
@@ -1597,13 +1756,169 @@ def duplicate_image(
 @mcp.tool()
 def delete_image(
     image_id: Annotated[str, Field(description="ID of the image to delete")]
-) -> dict[str, str]:
+) -> DeleteResult:
     """Delete an image from the session."""
     if image_id not in _image_store:
         raise ValueError(f"Image '{image_id}' not found.")
 
-    del _image_store[image_id]
-    return {"message": f"Image '{image_id}' deleted successfully"}
+    remove_image_internal(image_id)
+    return DeleteResult(message=f"Image '{image_id}' deleted successfully")
+
+
+# =============================================================================
+# Session Persistence Tools
+# =============================================================================
+
+
+@mcp.tool()
+def export_session(
+    path: Annotated[str, Field(description="Path to save the session archive (will be a .zip file)")],
+    include_history: Annotated[bool, Field(description="Include undo history for each image")] = False,
+) -> SessionExportResult:
+    """
+    Export all images and metadata to a zip archive for later restoration.
+
+    The archive contains:
+    - All images as PNG files
+    - A manifest.json with image IDs, dimensions, and order
+    - Optionally, undo history for each image
+
+    Use import_session to restore the session later.
+    """
+    if not _image_store:
+        raise ValueError("No images to export. Capture or load some images first.")
+
+    path = os.path.expanduser(path)
+    if not path.endswith(".zip"):
+        path = f"{path}.zip"
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+
+    images_list: list[dict[str, object]] = []
+    manifest: dict[str, object] = {
+        "version": "1.0",
+        "created_at": datetime.now().isoformat(),
+        "image_count": len(_image_store),
+        "images": images_list,
+        "image_order": _image_order.copy(),
+        "callout_counter": get_callout_counter(),
+    }
+
+    total_bytes = 0
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for image_id, data in _image_store.items():
+            # Save image
+            zf.writestr(f"images/{image_id}.png", data)
+            total_bytes += len(data)
+
+            # Add to manifest
+            width, height = _image_metadata.get(image_id, (0, 0))
+            image_info = {
+                "id": image_id,
+                "width": width,
+                "height": height,
+                "size_bytes": len(data),
+            }
+
+            # Include history if requested
+            if include_history and image_id in _image_history:
+                history = _image_history[image_id]
+                for i, hist_data in enumerate(history):
+                    zf.writestr(f"history/{image_id}/{i}.png", hist_data)
+                    total_bytes += len(hist_data)
+                image_info["history_count"] = len(history)
+
+            images_list.append(image_info)
+
+        # Write manifest
+        manifest_json = json.dumps(manifest, indent=2)
+        zf.writestr("manifest.json", manifest_json)
+        total_bytes += len(manifest_json)
+
+    total_mb = round(total_bytes / (1024 * 1024), 2)
+
+    return SessionExportResult(
+        path=os.path.abspath(path),
+        image_count=len(_image_store),
+        total_size_mb=total_mb,
+        message=f"Exported {len(_image_store)} images to {os.path.abspath(path)} ({total_mb} MB)",
+    )
+
+
+@mcp.tool()
+def import_session(
+    path: Annotated[str, Field(description="Path to the session archive (.zip file)")],
+    merge: Annotated[bool, Field(description="Merge with existing session (True) or replace (False)")] = True,
+    restore_history: Annotated[bool, Field(description="Restore undo history if available")] = True,
+) -> SessionImportResult:
+    """
+    Import a previously exported session from a zip archive.
+
+    By default, merges with the existing session. Set merge=False to replace
+    all current images with the imported ones.
+    """
+    path = os.path.expanduser(path)
+    if not os.path.exists(path):
+        raise ValueError(f"Session file not found: {path}")
+
+    if not merge:
+        # Clear existing session
+        _image_store.clear()
+        _image_history.clear()
+        _image_metadata.clear()
+        _image_order.clear()
+
+    imported_ids = []
+
+    with zipfile.ZipFile(path, "r") as zf:
+        # Read manifest
+        try:
+            manifest_data = zf.read("manifest.json")
+            manifest = json.loads(manifest_data)
+        except KeyError as e:
+            raise ValueError("Invalid session archive: missing manifest.json") from e
+
+        # Import images
+        for image_info in manifest.get("images", []):
+            image_id = image_info["id"]
+            image_path = f"images/{image_id}.png"
+
+            try:
+                image_data = zf.read(image_path)
+            except KeyError:
+                continue  # Skip missing images
+
+            # Store image
+            _image_store[image_id] = image_data
+            _image_metadata[image_id] = (image_info.get("width", 0), image_info.get("height", 0))
+            if image_id not in _image_order:
+                _image_order.append(image_id)
+            imported_ids.append(image_id)
+
+            # Restore history if available and requested
+            if restore_history and image_info.get("history_count", 0) > 0:
+                _image_history[image_id] = []
+                for i in range(image_info["history_count"]):
+                    hist_path = f"history/{image_id}/{i}.png"
+                    try:
+                        hist_data = zf.read(hist_path)
+                        _image_history[image_id].append(hist_data)
+                    except KeyError:
+                        break  # Stop if history file missing
+
+        # Restore callout counter if not merging
+        if not merge and "callout_counter" in manifest:
+            set_callout_counter(manifest["callout_counter"])
+
+    # Trigger eviction if needed
+    evict_if_needed()
+
+    return SessionImportResult(
+        image_count=len(imported_ids),
+        image_ids=imported_ids,
+        message=f"Imported {len(imported_ids)} images from {path}",
+    )
 
 
 # =============================================================================
@@ -1615,11 +1930,11 @@ def delete_image(
 def save_image(
     image_id: Annotated[str, Field(description="ID of the image to save")],
     path: Annotated[str, Field(description="File path to save the image to")],
-    format: Annotated[
+    image_format: Annotated[
         Literal["png", "jpg", "jpeg", "bmp", "gif", "webp"],
         Field(description="Image format")
     ] = "png",
-    quality: Annotated[int, Field(description="Quality for JPEG (1-100)")] = 95,
+    quality: Annotated[int, Field(ge=1, le=100, description="Quality for JPEG (1-100)")] = 95,
 ) -> SaveResult:
     """Save an image to disk."""
     image = _get_image(image_id)
@@ -1632,17 +1947,17 @@ def save_image(
 
     # Add extension if not present
     if not any(path.lower().endswith(f".{ext}") for ext in ["png", "jpg", "jpeg", "bmp", "gif", "webp"]):
-        path = f"{path}.{format}"
+        path = f"{path}.{image_format}"
 
     # Save with appropriate settings
     save_kwargs = {}
-    pil_format = format.upper()
+    pil_format = image_format.upper()
 
     # PIL uses 'JPEG' not 'JPG'
     if pil_format == "JPG":
         pil_format = "JPEG"
 
-    if format.lower() in ["jpg", "jpeg"]:
+    if image_format.lower() in ["jpg", "jpeg"]:
         # Convert RGBA to RGB for JPEG
         if image.mode == "RGBA":
             image = image.convert("RGB")
@@ -1659,7 +1974,7 @@ def save_image(
 @mcp.tool()
 def copy_to_clipboard(
     image_id: Annotated[str, Field(description="ID of the image to copy")]
-) -> dict[str, str]:
+) -> ClipboardResult:
     """Copy an image to the system clipboard."""
     if image_id not in _image_store:
         raise ValueError(f"Image '{image_id}' not found.")
@@ -1678,7 +1993,7 @@ def copy_to_clipboard(
             set the clipboard to theImage
             '''
             subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
-            return {"message": "Image copied to clipboard successfully"}
+            return ClipboardResult(message="Image copied to clipboard successfully")
         finally:
             os.unlink(tmp_path)
 
@@ -1695,7 +2010,7 @@ def copy_to_clipboard(
             [System.Windows.Forms.Clipboard]::SetImage($image)
             '''
             subprocess.run(["powershell", "-Command", ps_script], check=True, capture_output=True)
-            return {"message": "Image copied to clipboard successfully"}
+            return ClipboardResult(message="Image copied to clipboard successfully")
         finally:
             os.unlink(tmp_path)
 
@@ -1713,7 +2028,7 @@ def copy_to_clipboard(
                     check=True,
                     capture_output=True
                 )
-                return {"message": "Image copied to clipboard successfully (xclip)"}
+                return ClipboardResult(message="Image copied to clipboard successfully (xclip)")
             except FileNotFoundError:
                 pass
 
@@ -1726,11 +2041,11 @@ def copy_to_clipboard(
                         check=True,
                         capture_output=True
                     )
-                return {"message": "Image copied to clipboard successfully (wl-copy)"}
-            except FileNotFoundError:
+                return ClipboardResult(message="Image copied to clipboard successfully (wl-copy)")
+            except FileNotFoundError as e:
                 raise RuntimeError(
                     "No clipboard tool found. Install xclip (X11) or wl-copy (Wayland)."
-                )
+                ) from e
         finally:
             os.unlink(tmp_path)
 
@@ -1738,21 +2053,21 @@ def copy_to_clipboard(
 @mcp.tool()
 def get_image_base64(
     image_id: Annotated[str, Field(description="ID of the image")]
-) -> dict[str, str]:
+) -> Base64Result:
     """Get an image as a base64-encoded string."""
     base64_data = _image_to_base64(image_id)
-    return {
-        "image_id": image_id,
-        "data": f"data:image/png;base64,{base64_data}",
-        "message": "Image encoded as base64"
-    }
+    return Base64Result(
+        image_id=image_id,
+        data=f"data:image/png;base64,{base64_data}",
+        message="Image encoded as base64"
+    )
 
 
 @mcp.tool()
 def open_in_preview(
     image_id: Annotated[str, Field(description="ID of the image to open")],
     save_path: Annotated[str | None, Field(description="Optional path to save before opening")] = None,
-) -> dict[str, str]:
+) -> PreviewResult:
     """
     Open an image in the native Preview app (macOS only).
 
@@ -1781,30 +2096,21 @@ def open_in_preview(
     if sys.platform == "darwin":
         # macOS - use Preview.app
         subprocess.run(["open", "-a", "Preview", file_path], check=True)
-        return {
-            "message": "Image opened in Preview.app",
-            "path": file_path
-        }
+        return PreviewResult(message="Image opened in Preview.app", path=file_path)
     elif sys.platform == "win32":
         # Windows - use default viewer
         os.startfile(file_path)
-        return {
-            "message": "Image opened in default viewer",
-            "path": file_path
-        }
+        return PreviewResult(message="Image opened in default viewer", path=file_path)
     else:
         # Linux - use xdg-open
         subprocess.run(["xdg-open", file_path], check=True)
-        return {
-            "message": "Image opened in default viewer",
-            "path": file_path
-        }
+        return PreviewResult(message="Image opened in default viewer", path=file_path)
 
 
 @mcp.tool()
 def open_file_in_preview(
     path: Annotated[str, Field(description="Path to the image file to open")]
-) -> dict[str, str]:
+) -> PreviewResult:
     """
     Open an image file directly in the native Preview app (macOS) or default viewer.
 
@@ -1817,13 +2123,13 @@ def open_file_in_preview(
 
     if sys.platform == "darwin":
         subprocess.run(["open", "-a", "Preview", path], check=True)
-        return {"message": f"Opened {path} in Preview.app"}
+        return PreviewResult(message=f"Opened {path} in Preview.app", path=path)
     elif sys.platform == "win32":
         os.startfile(path)
-        return {"message": f"Opened {path} in default viewer"}
+        return PreviewResult(message=f"Opened {path} in default viewer", path=path)
     else:
         subprocess.run(["xdg-open", path], check=True)
-        return {"message": f"Opened {path} in default viewer"}
+        return PreviewResult(message=f"Opened {path} in default viewer", path=path)
 
 
 # =============================================================================
@@ -1833,8 +2139,6 @@ def open_file_in_preview(
 
 def main():
     """Run the MCP Screenshot Server."""
-    import argparse
-
     parser = argparse.ArgumentParser(description="MCP Screenshot Server")
     parser.add_argument(
         "--transport",

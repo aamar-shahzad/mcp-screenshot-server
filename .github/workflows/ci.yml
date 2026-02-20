@@ -37,7 +37,7 @@ jobs:
       - name: Run type checking
         run: |
           uv pip install --system mypy
-          mypy src/ --ignore-missing-imports || true
+          mypy src/ --ignore-missing-imports
 
       - name: Run tests
         run: |
